@@ -17,7 +17,7 @@
 ;;   http://two-wugs.net/emacs/mode-tutorial.html
 ;;   http://www.emacswiki.org/cgi-bin/wiki?SampleMode
 
-;; copied from http://www.autoitscript.com/forum/topic/10818-emacs-major-mode-for-autoit-v3/
+;; copied from http://www.autoitscript.com/forum/topic/10818-emacs-major-mode-for-autoit-v3/ then modified to suit taste
 
 ;;; Code:
 

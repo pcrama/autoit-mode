@@ -5,6 +5,8 @@
 ;; Version: 2005-04-25
 
 ;; TODO:
+;;   look at beginning-of-defun and end-of-defun
+;;   implement eldoc properly (look at skeleton autoit-documentation-function)
 ;;   indentation?
 ;;   consider redoing font lock levels
 ;;   usage instructions?
@@ -30,7 +32,7 @@
   "Keymap for `autoit-mode'")
 
 (defconst autoit-builtins
-  (list "And" "ByRef" "Case" "Const" "ContinueLoop" "Dim" "Do" "Else" "ElseIf" "EndFunc" "EndIf" "EndSelect" "Exit" "ExitLoop" "For" "Func" "Global" "If" "In" "Local" "Next" "Not" "Or" "ReDim" "Return" "Select" "Step" "Then" "To" "Until" "WEnd" "While" "#ce" "#comments-start" "#comments-end" "#cs" "#include" "#include-once" "#NoTrayIcon")
+  (list "And" "ByRef" "Case" "Const" "ContinueLoop" "Dim" "Do" "Else" "ElseIf" "EndFunc" "EndIf" "EndSelect" "Exit" "ExitLoop" "For" "Func" "Global" "If" "In" "Local" "Next" "Not" "Or" "ReDim" "Return" "Select" "Step" "Then" "To" "Until" "WEnd" "While" "#ce" "#comments-start" "#comments-end" "#cs" "#include" "#include-once" "#NoTrayIcon" "With" "EndWith" "Switch" "EndSwitch")
   "")
 
 (defconst autoit-function-names
@@ -183,6 +185,8 @@
 	     (setq alist nil res elt))))
     res))
 
+(require 'autoit-smie)
+
 ;;;###autoload
 (define-derived-mode autoit-mode prog-mode "AutoIt"
   "A major mode for editing AutoIt (V3) scripts."
@@ -191,14 +195,34 @@
   (set (make-local-variable 'comment-use-syntax) t)
   (set (make-local-variable 'indent-line-function) 'autoit-indent-line)
   ;; The following variables become buffer-local automatically
-  (setq imenu-generic-expression
-        '((nil "Func[ \n\t]+\\([A-Za-z_0-9]+\\)" 1)
-          (".Vars" "Global[ \n\t]+\\(\\$[A-Za-z_0-9]+\\)" 1)
+  (setq case-fold-search t
+        font-lock-defaults
+        '(autoit-font-lock-keywords     ; list of keywords
+          nil                           ; keywords-only
+          t                             ; case-fold
+          )
+        imenu-generic-expression
+        '((nil "\\<func[ \n\t]+\\([A-Za-z_0-9]+\\)" 1)
+          (".Vars" "\\<global[ \n\t]+\\(\\$[A-Za-z_0-9]+\\)" 1)
           ("#include" "^#include[ \t]+\"\\([^\"]+\\)\"" 1 autoit-mode-jump-to-include-file))
-        case-fold-search t
-        font-lock-defaults '(autoit-font-lock-keywords)
-        font-lock-keywords-case-fold-search t)
-  )
+        imenu-case-fold-search t)
+  (autoit-smie-setup))
+
+(defun autoit-enable-eldoc ()
+  "Setup and enable ElDoc minor mode for AutoIt source files."
+  (set (make-local-variable 'eldoc-documentation-function) 'autoit-documentation-function)
+  (turn-on-eldoc-mode))
+
+(defun autoit-documentation-function ()
+  (save-excursion
+    (when (search-backward "\(" (line-beginning-position) t)
+      (let ((old (point)))
+        (when (equal (autoit-smie-backward-token) ";id;")
+          (let* ((token (org-trim (buffer-substring-no-properties (point) old)))
+                 (result (concat token ": dummy text")))
+            (add-text-properties 0 (length token) '(face font-lock-function-name-face) result)
+            (add-text-properties (- (length result) 4) (length result) '(face font-lock-warning-face) result)
+            result))))))
 
 (provide 'autoit-mode)
 

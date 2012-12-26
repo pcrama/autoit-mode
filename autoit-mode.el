@@ -90,58 +90,18 @@
      (modify-syntax-entry ?_ "w" table)
      (modify-syntax-entry ?\; "<   " table)
      (modify-syntax-entry ?\n ">   " table)
-     (modify-syntax-entry ?\^m ">   " table)
+     ;; commented out in lisp-mode.el (modify-syntax-entry ?\^m ">   " table)
+     (modify-syntax-entry ?\" "\"    " table)
+     (modify-syntax-entry ?\( "()  " table)
+     (modify-syntax-entry ?\) ")(  " table)
+     (modify-syntax-entry ?\[ "(]  " table)
+     (modify-syntax-entry ?\] ")[  " table)
      (modify-syntax-entry ?\\ "." table) ; `\' isn't an escape character!
      table)
   "Syntax table for `autoit-mode'")
 
 (defun autoit-mode-jump-to-include-file (&rest args)
   (find-file (first args) nil))
-
-(defun autoit-indent-line ()
-  "Indent current line as AutoIt code"
-  (interactive)
-  (beginning-of-line)
-
-  (if (bobp)  ; Check for rule 1
-      (indent-line-to 0)
-
-    (let ((not-indented t) cur-indent)
-
-      (if (looking-at "^[ \t]*\\<\\(Next\\|EndFunc\\|ElseIf\\|Else\\|EndIf\\|EndSelect\\|EndSwitch\\|WEnd\\|EndWith\\)\\>") ; Check for rule 2
-          (progn
-            (save-excursion
-              (forward-line -1)
-              (setq cur-indent (- (current-indentation) default-tab-width)))
-
-            (if (< cur-indent 0)
-                (setq cur-indent 0))
-
-            (if (looking-at "^[ \t]*\\<\\(ElseIf\\|Else\\)\\>")
-                (progn
-                  (save-excursion
-                    (forward-line -1)
-                    (setq cur-indent (- (current-indentation) default-tab-width))))))
-
-        (save-excursion
-          (while not-indented
-            (forward-line -1)
-            (if (looking-at "^[ \t]*\\<\\(Next\\|EndFunc\\|EndIf\\|EndSelect\\|EndSwitch\\|WEnd\\|EndWith\\)\\>") ; Check for rule 3
-                (progn
-                  (setq cur-indent (current-indentation))
-                  (setq not-indented nil))
-                                        ; Check for rule 4
-              (if (looking-at "^[ \t]*\\<\\(For\\|Func\\|If\\|Select\\|Switch\\|While\\|With\\)\\>")
-                  (progn
-                    (setq cur-indent (+ (current-indentation) default-tab-width))
-                    (setq not-indented nil))
-
-                (if (bobp) ; Check for rule 5
-                    (setq not-indented nil)))))))
-
-      (if cur-indent
-          (indent-line-to cur-indent)
-        (indent-line-to 0))))) ; If we didn't see an indentation hint, then allow no indentation
 
 (defun imenu--sort-by-position (item1 item2)
   (< (if (consp (cdr item1)) (cadr item1) (cdr item1))

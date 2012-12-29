@@ -147,6 +147,9 @@
 
 (require 'autoit-smie)
 
+(defvar autoit-eldoc-function-name-regexp
+  "\\<func[ \n\t]+\\([A-Za-z_0-9]+\\)")
+
 ;;;###autoload
 (define-derived-mode autoit-mode prog-mode "AutoIt"
   "A major mode for editing AutoIt (V3) scripts."
@@ -162,27 +165,337 @@
           t                             ; case-fold
           )
         imenu-generic-expression
-        '((nil "\\<func[ \n\t]+\\([A-Za-z_0-9]+\\)" 1)
-          (".Vars" "\\<global[ \n\t]+\\(\\$[A-Za-z_0-9]+\\)" 1)
-          ("#include" "^#include[ \t]+\"\\([^\"]+\\)\"" 1 autoit-mode-jump-to-include-file))
+        (list (list nil autoit-eldoc-function-name-regexp 1)
+              '(".Vars" "\\<global[ \n\t]+\\(\\$[A-Za-z_0-9]+\\)" 1)
+              '("#include" "^#include[ \t]+\"\\([^\"]+\\)\"" 1 autoit-mode-jump-to-include-file))
         imenu-case-fold-search t)
   (autoit-smie-setup))
+
+(defvar autoit-eldoc-predefined-functions-cache
+  (concat (file-name-directory load-file-name)
+          "autoit-predefined-functions.el")
+  "File where function definitions of builtin & UDF functions are stored.
+See `autoit-prepare-function-definitions'")
 
 (defun autoit-enable-eldoc ()
   "Setup and enable ElDoc minor mode for AutoIt source files."
   (set (make-local-variable 'eldoc-documentation-function) 'autoit-documentation-function)
-  (turn-on-eldoc-mode))
+  (turn-on-eldoc-mode)
+  (with-temp-buffer
+    (insert-file-contents autoit-eldoc-predefined-functions-cache)
+    (let ((hash (read (current-buffer))))
+      (maphash (lambda (key value)
+                 (puthash key value autoit-function-definitions))
+               hash))))
+
+(defvar autoit-eldoc-include-docstring
+  t
+  "Eldoc will append a short description to status unless this is nil.")
+
+(defvar autoit-eldoc-max-width
+  100
+  "Eldoc will display description on same line as function
+name/parameters unless this length is exceeded.")
+
+(defvar autoit-function-definitions
+  (make-hash-table :test 'equal)
+  "Hashtable mapping function names to \(parameter-sequence short-description origin\).")
+
+;; Todo: fill hash-table automatically!!
+;; (setf (gethash "werl" autoit-function-definitions)
+;;       '(["$arg1" "$arg2" "$arg3"] "Frob a foo" "file.au3"))
+
+(defun autoit-scan-buffer-for-eldoc ()
+  (save-excursion
+    (goto-char (point-min))
+    (while (re-search-forward autoit-eldoc-function-name-regexp () t)
+      (let ((name (buffer-substring-no-properties
+                   (match-beginning 1) (match-end 1)))
+            (end (match-end 1))
+            result)
+        (goto-char end)
+        (when (equal (autoit-smie-forward-token) "(")
+          (let (arglist
+                tok
+                arg)
+            (while (and (stringp (setq tok (autoit-smie-forward-token)))
+                        (not (member tok '(";lf;" "\(" "\)"))))
+              (if (equal tok ",")
+                  (when arg
+                    (setq arglist (cons arg arglist)
+                          arg nil))
+                (setq tok (autoit-smie-last-token-literally)
+                      arg (if (null arg)
+                              tok
+                            (concat arg " " tok)))))
+            (when arg
+              (setq arglist (cons arg arglist)
+                    arg nil))
+            (puthash name
+                     (list (reverse arglist)
+                           ""           ; TODO try to find a docstring
+                           (or (buffer-file-name)
+                               buffer-file-truename
+                               (buffer-name)))
+                     autoit-function-definitions)))))))
+
+(defun autoit-skip-back-to-function-name ()
+  ;; suppress mode-specific forward-sexp-function so that the backward-up-list
+  ;; only looks at parentheses tokens
+  (let ((forward-sexp-function nil))
+    (while (progn (backward-up-list)
+                  (and (not (bobp))
+                       (not (equal (autoit-smie-backward-token) ";id;"))))))
+  (let ((old (point)))
+    (prog1
+        (when (equal (autoit-smie-forward-token) ";id;")
+          (buffer-substring-no-properties old (point)))
+      (goto-char old))))
 
 (defun autoit-documentation-function ()
   (save-excursion
-    (when (search-backward "\(" (line-beginning-position) t)
-      (let ((old (point)))
-        (when (equal (autoit-smie-backward-token) ";id;")
-          (let* ((token (org-trim (buffer-substring-no-properties (point) old)))
-                 (result (concat token ": dummy text")))
-            (add-text-properties 0 (length token) '(face font-lock-function-name-face) result)
-            (add-text-properties (- (length result) 4) (length result) '(face font-lock-warning-face) result)
-            result))))))
+    (let* ((old (point))
+           (fun (condition-case err (autoit-skip-back-to-function-name)
+                  (scan-error nil)))
+           (pos 0)
+           fun-info)
+      (when (and (stringp fun)
+                 (setq fun-info (gethash fun autoit-function-definitions nil))
+                 (progn (goto-char (+ (point) (length fun))) t)
+                 (equal (autoit-smie-forward-token) "\("))
+        (while (and (condition-case nil
+                        (progn (forward-sexp) t)
+                      ((scan-error end-of-buffer) nil))
+                    (not (eobp))
+                    (< (point) old))
+          (let ((comma-old (point)))
+            (if (equal (autoit-smie-forward-token) ",")
+                (incf pos)
+              (goto-char comma-old))))
+        (let* ((result (concat fun ": "))
+               (par-seq (car fun-info))
+               (docstring (and autoit-eldoc-include-docstring (cadr fun-info)))
+               start-idx end-idx
+               start-doc)
+          (dotimes (i (length par-seq))
+            (when (plusp i) (setq result (concat result ", ")))
+            (when (= i pos) (setq start-idx (length result)))
+            (setq result (concat result (elt par-seq i)))
+            (when (= i pos) (setq end-idx (length result))))
+          (when docstring
+            (let ((sep (if (> (+ (length result) (length docstring))
+                              autoit-eldoc-max-width)
+                           "\n"
+                         " ; ")))
+              (setq start-doc (+ (length result) (length sep)))
+              (setq result (concat result sep docstring))))
+          (add-text-properties 0 (length fun) '(face font-lock-function-name-face) result)
+          (when (and (numberp start-idx) (numberp end-idx))
+           (add-text-properties start-idx end-idx
+                                '(face font-lock-function-name-face) result))
+          (when docstring
+            (add-text-properties start-doc (length result)
+                                 '(face font-lock-comment-face) result))
+          result)))))
+
+(defun autoit-prepare-function-definitions ()
+  (with-temp-buffer
+    (clrhash autoit-function-definitions)
+    (autoit-grovel-chm-for-builtin-functions)
+    (autoit-grovel-user-defined-functions)
+    (prin1 autoit-function-definitions (current-buffer))
+    (write-region (point-min)
+                  (point-max)
+                  autoit-eldoc-predefined-functions-cache)))
+
+(defun autoit-grovel-chm-for-builtin-functions ()
+  ;; 7z x AutoIt3.chm html/functions/... and grovel those
+  (let* ((autoit-path (file-name-directory (executable-find "AutoIt3.exe")))
+         (temp-dest (make-temp-file "unpack-autoit-help" 'directory)))
+    (call-process "7z.exe"
+                  nil                   ; no STDIN
+                  nil                   ; no STDOUT
+                  nil                   ; no redisplay
+                  "x"
+                  (concat "-o" temp-dest)
+                  (concat autoit-path "AutoIt3.chm"))
+    (dolist (file (directory-files
+                   (concat temp-dest "/html/functions/") 'full-name "\.html?$"))
+      (message "Looking at %s" file)
+      (save-excursion
+        (let ((buffer (find-file-noselect file))
+              funcdesc
+              params)
+          (set-buffer buffer)
+          (widen)
+          (goto-char (point-min))
+          (when (re-search-forward
+                 "class=\"funcdesc\">\\(.*?\\)<br>[ \t\n\r]*</p>"
+                 (point-max)
+                 'noerror)
+            (setf funcdesc (buffer-substring-no-properties (match-beginning 1)
+                                                           (match-end 1))))
+          (goto-char (point-min))
+          (when (re-search-forward
+                 "class=\"codeheader\">[ \t\n\r]*\\(.*?\\)<br>[ \t\n\r]*</p>"
+                 (point-max)
+                 'noerror)
+            (setf params (buffer-substring-no-properties (match-beginning 1)
+                                                         (match-end 1)))
+            (goto-char (match-beginning 1))
+            (autoit-smie-forward-token)
+            (setf funcname (autoit-smie-last-token-literally))
+            (let* ((pos (point))
+                   (next-should-be-paren (autoit-smie-forward-token))
+                   reversed-parameters
+                   par-start
+                   par-end
+                   (next-par-start (point))
+                   (closers '(";lf;" ";lf-after-func;" "" nil "\)"))
+                   done
+                   future-optional-par
+                   optional-par)
+              (labels ((forward-ignore-square-brackets
+                        ()
+                        (let (done tok)
+                          (while (not done)
+                            (setq tok (autoit-smie-forward-token))
+                            (cond ((equal tok "[")
+                                   (setq future-optional-par t))
+                                  ((equal tok "]"))
+                                  (t (setq done t))))
+                          tok)))
+                (when (equal next-should-be-paren "\(")
+                  (while
+                      (progn
+                        (goto-char (setq par-start next-par-start))
+                        (setq optional-par future-optional-par)
+                        (while
+                            (unless done
+                              (setq par-end (point))
+                              (let ((tok (forward-ignore-square-brackets)))
+                                (setq next-par-start (point))
+                                (setq done (member tok closers))
+                                (not (or done (equal tok ","))))))
+                        (< par-start par-end))
+                    (let (rev-par-tokens)
+                      (goto-char par-start)
+                      (while (< (point) par-end)
+                        (push (progn (forward-ignore-square-brackets)
+                                     (autoit-smie-last-token-literally))
+                              rev-par-tokens))
+                      (push (apply 'concat
+                                   (let ((parts (list (if optional-par "]" "")))
+                                         tok)
+                                     (while (setq tok (pop rev-par-tokens))
+                                       (cond ((equal tok "=")
+                                              (push tok parts))
+                                             ((endp rev-par-tokens)
+                                              (push tok parts))
+                                             ((equal "=" (car rev-par-tokens))
+                                              (push tok parts))
+                                             (t (setq parts
+                                                      (list* " " tok parts)))))
+                                     (when optional-par
+                                       (push "[" parts))
+                                     parts))
+                            reversed-parameters)))
+                  (message "%S" (autoit-eldoc-make-entry
+                                 file pos
+                                 funcname (reverse reversed-parameters)
+                                 funcdesc))
+                  (puthash funcname
+                           (list (reverse reversed-parameters)
+                                 funcdesc
+                                 'builtin)
+                           autoit-function-definitions)))))
+          (kill-buffer buffer))))))
+
+(defun autoit-eldoc-make-entry (file pos
+                                func-name parameters
+                                descr)
+  (list file pos func-name parameters descr))
+
+(defun autoit-grovel-user-defined-functions ()
+  (let* ((autoit-path (file-name-directory (executable-find "AutoIt3.exe")))
+         (include-path (file-name-as-directory (concat autoit-path "Include")))
+         (files (directory-files include-path 'full-name "\.au3$")))
+    (dolist (file files)
+      (message "Looking at %s" file)
+      (save-excursion
+        (let ((buffer (find-file-noselect file)))
+          (set-buffer buffer)
+          (widen)
+          (goto-char (point-min))
+          (while (re-search-forward ";[ \t;=]*#FUNCTION#" (point-max) 'noerror)
+            (let ((func-top (point))
+                  (func-bot (if (re-search-forward "[\r\n]endfunc"
+                                                   (point-max)
+                                                   'noerror)
+                                (point)
+                              (point-max)))
+                  info)
+              (dolist (pattern '("; \\(?:Function[ \t]*\\)?Name[. \t]*:[ \t]*\\([A-Za-z_0-9]*\\)"
+                                 "; Description[. \t]*:[ \t]*\\([^\r\n]*\\)"
+                                 ;; This pattern must be last to use the
+                                 ;; side-effect that the cursor is located close
+                                 ;; to the parameter list
+                                 "[\r\n]Func[ \t]*\\([A-Za-z_0-9]*\\)[ \t\r\n]*"))
+                (goto-char func-top)
+                (push (when (re-search-forward pattern func-bot 'noerror)
+                        (goto-char (match-end 1))
+                        (buffer-substring-no-properties (match-beginning 1)
+                                                        (match-end 1)))
+                      info))
+              (let* ((pos (point))
+                     (next-should-be-paren (autoit-smie-forward-token))
+                     reversed-parameters
+                     par-start
+                     par-end
+                     (next-par-start (point))
+                     done)
+                (when (equal next-should-be-paren "\(")
+                  (while
+                      (progn
+                        (goto-char (setq par-start next-par-start))
+                        (while
+                            (unless done
+                              (setq par-end (point))
+                              (let ((tok (autoit-smie-forward-token)))
+                                (setq next-par-start (point))
+                                (setq done (member tok '(";lf;" ";lf-after-func;" "" nil "\)")))
+                                (not (or done (equal tok ","))))))
+                        (< par-start par-end))
+                    (let (rev-par-tokens)
+                      (goto-char par-start)
+                      (while (< (point) par-end)
+                        (push (progn (autoit-smie-forward-token)
+                                     (autoit-smie-last-token-literally))
+                              rev-par-tokens))
+                      (push (apply 'concat
+                                   (let ((parts '(""))
+                                         tok)
+                                     (while (setq tok (pop rev-par-tokens))
+                                       (cond ((equal tok "=")
+                                              (push tok parts))
+                                             ((endp rev-par-tokens)
+                                              (push tok parts))
+                                             ((equal "=" (car rev-par-tokens))
+                                              (push tok parts))
+                                             (t (setq parts
+                                                      (list* " " tok parts)))))
+                                     parts))
+                            reversed-parameters)))
+                  (message "%S" (autoit-eldoc-make-entry
+                                 file pos
+                                 (caddr info) (reverse reversed-parameters)
+                                 (cadr info)))
+                  (puthash (caddr info)
+                           (list (reverse reversed-parameters)
+                                 (cadr info)
+                                 'udf)
+                           autoit-function-definitions)))))
+          (kill-buffer buffer))))))
 
 (provide 'autoit-mode)
 

@@ -16,6 +16,13 @@
     ;; seen as identifiers and fall in the rule ";id;" exp
     ))
 
+(defvar autoit-last-token-start nil)
+(defvar autoit-last-token-end nil)
+
+(defun autoit-smie-last-token-literally ()
+  (buffer-substring-no-properties autoit-last-token-start
+                                  autoit-last-token-end))
+
 (defun autoit-massage-identifier (str)
   (if (and (stringp str)
            (> (length str) 1)
@@ -227,6 +234,7 @@
         (progn (autoit-skip-to-next-token) (setq result ";lf;"))
       (autoit-skip-to-next-token)
       (let ((next (char-after)))
+        (setq autoit-last-token-start (point))
         (cond ((not next) (setq result ""))         ; end of buffer
               ((member next autoit-single-char-tokens)
                (forward-char)
@@ -244,7 +252,8 @@
               ;; Note that this case also will return "and" "or" and "not"
               ;; that are technically operators.  This distinction is taken
               ;; care of by the grammar.
-              (t (setq result (autoit-forward-identifier))))))
+              (t (setq result (autoit-forward-identifier))))
+        (setq autoit-last-token-end (point))))
     (when (or (> (point) old) (not *autoit-smie-forward-eob*))
       (setq *autoit-smie-forward-eob* (= (point) old)
             *autoit-smie-backward-bob* nil)
@@ -307,6 +316,7 @@
         (setq result ";lf;")))
     (unless result
       (autoit-forward-comment (- (point)))
+      (setq autoit-last-token-end (point))
       (let ((prev (char-before)))
         (cond ((not prev)
                (setq result ""))
@@ -325,7 +335,8 @@
               ;; Note that this case also will return "and" "or" and "not"
               ;; that are technically operators.  This distinction is taken
               ;; care of by the grammar.
-              (t (setq result (autoit-backward-identifier))))))
+              (t (setq result (autoit-backward-identifier)))))
+      (setq autoit-last-token-start (point)))
     (when (or (< (point) old) (not *autoit-smie-backward-bob*))
       (setq *autoit-smie-backward-bob* (= (point) old)
             *autoit-smie-forward-eob* nil)

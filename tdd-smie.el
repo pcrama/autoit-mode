@@ -295,13 +295,21 @@
                    (cons au3-mode-+operator+ "+")))
     (should (not (au3-mode--run-token-matcher fut "|@$a=")))))
 
-(defun au3-mode-forward-token ()
-  (au3-mode-skip-to-next-token)
+(defun au3-mode--naive-forward-token ()
   (or (au3-mode-next-newline)
       (au3-mode-next-number)
       (au3-mode-next-operator)
       (au3-mode-next-identifier)
       (au3-mode-next-keyword)))
+
+(defun au3-mode--forward-token-and-update-cache (beg)
+  (au3-mode--naive-forward-token))
+
+(defun au3-mode-forward-token ()
+  (au3-mode-skip-to-next-token)
+  (let ((here (point)))
+    (or (au3-mode--cache-get-token-from-beg here)
+        (au3-mode--forward-token-and-update-cache here))))
 
 (ert-deftest au3-mode-test-forward-token ()
   "Test `au3-mode-forward-token'"
@@ -323,61 +331,68 @@ other to map end positions to the same tokens.  See
 (defun au3-mode--cache-valid-p ()
   (eql (buffer-chars-modified-tick) (car au3-mode--token-cache)))
 
+(defun au3-mode--cache-tick ()
+  (car au3-mode--token-cache))
+
+(defun au3-mode--cache-beginning ()
+  (car (cdr au3-mode--token-cache)))
+
+(defun au3-mode--cache-end ()
+  (cdr (cdr au3-mode--token-cache)))
+
+(defun au3-mode--cache-entry-beg (x)
+  (car (cdr x)))
+
+(defun au3-mode--cache-entry-end (x)
+  (car x))
+
+(defun au3-mode--cache-entry-token (x)
+  (cdr (cdr x)))
+
+(defun au3-mode--cache-compare-beg (a b)
+  (cond ((and (consp a) (consp b))
+         (< (au3-mode--cache-entry-beg a) (au3-mode--cache-entry-beg b)))
+        ((and (consp a) (numberp b))
+         (< (au3-mode--cache-entry-beg a) b))
+        ((and (numberp a) (consp b))
+         (< a (au3-mode--cache-entry-beg b)))
+        (t (error "Not reached: a=%s b=%s" a b))))
+
+(defun au3-mode--cache-compare-end (a b)
+  (cond ((and (consp a) (consp b))
+         (< (au3-mode--cache-entry-end a) (au3-mode--cache-entry-end b)))
+        ((and (consp a) (numberp b))
+         (< (au3-mode--cache-entry-end a) b))
+        ((and (numberp a) (consp b))
+         (< a (au3-mode--cache-entry-end b)))
+        (t (error "Not reached: a=%s b=%s" a b))))
+
 (defun au3-mode--cache-insert-token (token start end)
   (let ((new-entry (cons end (cons start token))))
-    (setq au3-mode--token-cache
-          (if (au3-mode--cache-valid-p)
-              (cons (car au3-mode--token-cache)
-                    (cons new-entry (cdr au3-mode--token-cache)))
-            (list (buffer-chars-modified-tick) new-entry)))
+    (unless (au3-mode--cache-valid-p)
+      (setq au3-mode--token-cache
+            (cons (buffer-chars-modified-tick)
+                  (cons (avl-tree-create #'au3-mode--cache-compare-beg)
+                        (avl-tree-create #'au3-mode--cache-compare-end)))))
+    (avl-tree-enter (au3-mode--cache-beginning) new-entry)
+    (avl-tree-enter (au3-mode--cache-end) new-entry)
     token))
 
-(defun au3-mode--cache-get-token (end)
-  "Sets cursor position as side effect"
-  (let ((result (assoc end (cdr au3-mode--token-cache))))
+(defun au3-mode--cache-get-token-from-beg (beg)
+  "Sets cursor position after token as side effect"
+  (let* ((cache (au3-mode--cache-beginning))
+         (result (when cache (avl-tree-member cache beg))))
     (when result
-      (goto-char (car (cdr result)))
-      (cdr (cdr result)))))
+      (goto-char (au3-mode--cache-entry-end result))
+      (au3-mode--cache-entry-token result))))
 
-(defun au3-mode--range-compare (left right)
-  ;; (require 'avl-tree)
-  ;;
-  ;; we will cache tokens and their positions in an AVL tree (avl-tree is
-  ;; built-in in Emacs).  This function compares ranges for their validity.
-  (let ((left-start (car left))
-        (left-end (cdr left))
-        (right-start (car right))
-        (right-end (cdr right)))
-    (when (> left-start left-end)
-      (error "left range %s %s is invalid" left-start left-end))
-    (when (> right-start right-end)
-      (error "right range %s %s is invalid" right-start right-end))
-    (cond
-     ;; both ranges are identical -> test this 1st to avoid raising error for
-     ;; overlap.
-     ((and (equal left-start right-start)
-           (equal left-end right-end)) nil)
-     ;; check that unequal ranges are disjoint (consistency check)
-     ((or (<= left-start right-start left-end)
-          (<= left-start right-end left-end)
-          (<= right-start left-start right-end)
-          (<= right-start left-end right-end))
-      (error "Ranges (%s %s) and (%s %s) overlap"
-             left-start left-end right-start right-end))
-     ;; ranges are valid and disjoint -> compare edges only
-     ((< left-end right-start) t)
-     ((< right-end left-start) nil))))
-
-(ert-deftest test-au3-mode--range-compare ()
-  "Test range comparation function used for AVL tree"
-  :tags '(utils)
-  (should (au3-mode--range-compare '(1 . 1) '(2 . 2)))
-  (should (not (au3-mode--range-compare '(2 . 2) '(1 . 1))))
-  (should (not (au3-mode--range-compare '(2 . 2) '(2 . 2))))
-  (should-error (au3-mode--range-compare '(1 . 5) '(2 . 4)))
-  (should-error (au3-mode--range-compare '(2 . 4) '(1 . 5)))
-  (should-error (au3-mode--range-compare '(3 . 5) '(2 . 4)))
-  (should-error (au3-mode--range-compare '(2 . 4) '(3 . 5))))
+(defun au3-mode--cache-get-token-from-end (end)
+  "Sets cursor position before token as side effect"
+  (let* ((cache (au3-mode--cache-end))
+         (result (when cache (avl-tree-member cache end))))
+    (when result
+      (goto-char (au3-mode--cache-entry-beg result))
+      (au3-mode--cache-entry-token result))))
 
 (defun au3-mode--backward-token-and-update-cache (here)
   ;; Move back to a position known to be a token start and advance by token
@@ -453,49 +468,36 @@ other to map end positions to the same tokens.  See
       (goto-char (car au3-mode--bt-result))
       (cdr au3-mode--bt-result))))
 
-;; " If $a Then $b "
-;; (1 2 "If" 5)
-;; (4 5 "$a" 8)
-;; (7 8 "Then" 13)
-;; (12 13 "$b" 16)
-;; (15 16 ";lf;" 16)
-
-(defun interval-< (a b)
-  (cond ((and (consp a) (numberp b))
-         (< (cdr a) b))
-        ((and (numberp a) (consp b))
-         (< a (car b)))
-        ((and (consp a) (consp b))
-         (and (< (car a) (car b))
-              (<= (cdr a) (cdr b))))))
-
 (defun au3-mode-backward-token ()
   (skip-chars-backward " \t")
   (let ((here (point)))
-   (or (au3-mode--cache-get-token here)
+   (or (au3-mode--cache-get-token-from-end here)
        (au3-mode--backward-token-and-update-cache here))))
 
 (ert-deftest au3-mode-test-token-cache ()
-  "Test `au3-mode--cache-get-token', `au3-mode--cache-insert-token'"
+  "Test `au3-mode--cache-get-token-from-end',
+`au3-mode--cache-get-token-from-beg',
+`au3-mode--cache-insert-token'"
   :tags '(utils)
   (with-temp-buffer
     (insert "A B C D")
     (setq au3-mode--token-cache nil)
-    (should (not (au3-mode--cache-get-token 0)))
+    (should (not (au3-mode--cache-get-token-from-end 0)))
     (au3-mode--cache-insert-token "A" 1 2)
-    (should (equal au3-mode--token-cache
-                   (list (buffer-chars-modified-tick)
-                         (cons 2 (cons 1 "A")))))
-    (should (equal (au3-mode--cache-get-token 2)
+    (let ((beg-entry (avl-tree-member (au3-mode--cache-beginning) 1)))
+      (should (eq beg-entry
+                  (avl-tree-member (au3-mode--cache-end) 2)))
+      (should (equal beg-entry (cons 2 (cons 1 "A")))))
+    (should (equal (au3-mode--cache-get-token-from-end 2)
                    "A"))
     (should (equal (point) 1))
-    (should (not (au3-mode--cache-get-token 0)))
-    (should (not (au3-mode--cache-get-token 100)))
+    (should (not (au3-mode--cache-get-token-from-end 0)))
+    (should (not (au3-mode--cache-get-token-from-end 100)))
     (au3-mode--cache-insert-token "B" 3 4)
-    (should (equal (au3-mode--cache-get-token 4)
+    (should (equal (au3-mode--cache-get-token-from-end 4)
                    "B"))
     (should (equal (point) 3))
-    (should (equal (au3-mode--cache-get-token 2)
+    (should (equal (au3-mode--cache-get-token-from-end 2)
                    "A"))
     (should (equal (point) 1))))
 

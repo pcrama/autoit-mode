@@ -51,25 +51,25 @@
       (backward-char))
     (autoit-massage-identifier (buffer-substring-no-properties (point) old))))
 
-(defun autoit-xxxward-string (char-incr char-accessor)
+(defun autoit-xxxward-string (char-incr char-accessor delimiter)
   (let ((old (point)))
     (while
         (progn
           (forward-char char-incr)
-          (when (and (equal (funcall char-accessor) ?\")
-                     (equal (funcall char-accessor (+ (point) char-incr)) ?\"))
+          (when (and (equal (funcall char-accessor) delimiter)
+                     (equal (funcall char-accessor (+ (point) char-incr)) delimiter))
             (forward-char (* 2 char-incr)))
-          (not (equal (funcall char-accessor) ?\"))))
+          (not (equal (funcall char-accessor) delimiter))))
     (forward-char char-incr)
     (buffer-substring-no-properties old (point))))
 
-(defun autoit-forward-string ()
+(defun autoit-forward-string (delimiter)
   "Advance point after end of a string literal, returning the string."
-  (autoit-xxxward-string 1 'char-after))
+  (autoit-xxxward-string 1 'char-after delimiter))
 
-(defun autoit-backward-string ()
+(defun autoit-backward-string (delimiter)
   "Backup point to beginning of a string literal, returning the string."
-  (autoit-xxxward-string -1 'char-before))
+  (autoit-xxxward-string -1 'char-before delimiter))
 
 (defun autoit-forward-operator ()
   "Advance point after end of an operator, returning the operator."
@@ -239,8 +239,8 @@
               ((member next autoit-single-char-tokens)
                (forward-char)
                (setq result (string next)))
-              ((char-equal next ?\")
-               (autoit-forward-string)
+              ((or (char-equal next ?\") (char-equal next ?\'))
+               (autoit-forward-string next)
                (setq result ";string;"))
               ((or (char-equal next ?-) (char-equal next ?+)
                    (and (<= ?0 next) (<= next ?9)))
@@ -323,8 +323,8 @@
               ((member prev autoit-single-char-tokens)
                (forward-char -1)
                (setq result (string prev)))
-              ((char-equal prev ?\")
-               (autoit-backward-string)
+              ((or (char-equal prev ?\") (char-equal prev ?\'))
+               (autoit-backward-string prev)
                (setq result ";string;"))
               ((member prev autoit-operators-maybe-followed-by-=)
                (setq result (autoit-backward-operator)))
@@ -390,7 +390,11 @@
              result))
           (t result))))
 
-(defvar autoit-block-offset 4)
+(defcustom autoit-block-offset 4
+  "Default indentation offset for AutoIt v3."
+  :group 'autoit
+  :type 'integer
+  :safe 'integerp)
 
 (defvar *rules-level* 0)
 
@@ -410,7 +414,7 @@
         ;(smie--parent nil)
         (*rules-level* (1+ *rules-level*))
         (keywords-followed-by-indent
-         '("do" "if" "while" "with" "select" "case" "for" "func")))
+         '("do" "if" "while" "with" "select" "case" "for" "func" ";case-else;")))
     ;; (if (member kind '(:before :after))
     ;;     (let* ((parent (smie-indent--parent))
     ;;            (dummy-next (smie-rule-next-p ";lf;"))
@@ -510,7 +514,7 @@
        (switch-case-list ("case" exp "to" exp ";lf-after-case;" inst)
                          (switch-case-list ";lf-before-case;" switch-case-list)
                          (switch-case-list ";lf-before-case;"
-                                           ";case-else;" ";lf-after-case; inst"))
+                                           ";case-else;" ";lf-after-case;" inst))
        (for-clause ($id "=" exp "to" exp)
                    ($id "=" exp "to" exp "step" exp)
                    ($id "in" exp))
@@ -546,13 +550,14 @@
      '((assoc ";lf;"))
      '((assoc ";lf;")
        (assoc ";lf-before-case;") (assoc ";lf-after-case;")
-       (assoc "case" "case-else")
+       (assoc "case" ";case-else;")
        (assoc "to"))
      '((assoc "else" "elseif") (assoc "then") (assoc ";lf;"))
      ;'((nonassoc "do;lf;") (assoc ";lf;until") (assoc ";lf;"))
      '((assoc ","))
      '((assoc ";lf;")
        (assoc "to")
+       (right "&")
        (assoc "=" "+=" "-=" "*=" "&=" "/=")
        (assoc "<" ">" "<>" "==")
        (assoc "or")

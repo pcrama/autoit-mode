@@ -92,6 +92,7 @@
      (modify-syntax-entry ?\n ">   " table)
      ;; commented out in lisp-mode.el (modify-syntax-entry ?\^m ">   " table)
      (modify-syntax-entry ?\" "\"    " table)
+     (modify-syntax-entry ?\' "'   " table)
      (modify-syntax-entry ?\( "()  " table)
      (modify-syntax-entry ?\) ")(  " table)
      (modify-syntax-entry ?\[ "(]  " table)
@@ -156,7 +157,7 @@
   (set (make-local-variable 'comment-start) ";")
   (set (make-local-variable 'comment-start-skip) ";+[ \t]*")
   (set (make-local-variable 'comment-use-syntax) t)
-  (set (make-local-variable 'indent-line-function) 'autoit-indent-line)
+  ; (set (make-local-variable 'indent-line-function) 'autoit-indent-line)
   ;; The following variables become buffer-local automatically
   (setq case-fold-search t
         font-lock-defaults
@@ -169,7 +170,8 @@
               '(".Vars" "\\<global[ \n\t]+\\(\\$[A-Za-z_0-9]+\\)" 1)
               '("#include" "^#include[ \t]+\"\\([^\"]+\\)\"" 1 autoit-mode-jump-to-include-file))
         imenu-case-fold-search t)
-  (autoit-smie-setup))
+  ; (autoit-smie-setup)
+  )
 
 (defvar autoit-eldoc-predefined-functions-cache
   (concat (file-name-directory load-file-name)

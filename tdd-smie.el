@@ -67,12 +67,16 @@
             (error "NOTREACHED: keyword list and keyword regexp out of sync")))))))
 
 (defconst au3-mode--+multi-line-comment-start-regexp+
-  "[ \t]*#c\\(omments-start\\|s\\)\\>")
+  "[ \t]*#c\\(omments-start\\|s\\)\\>"
+  "Regular expression matching the start of a multi-line comment block.")
 (defconst au3-mode--+multi-line-comment-end-regexp+
-  "[ \t]*#c\\(omments-end\\|e\\)\\>")
+  "[ \t]*#c\\(omments-end\\|e\\)\\>"
+  "Regular expression matching the end of a multi-line comment block.")
 
 (make-variable-buffer-local
- (defvar au3-mode--next-newline-already-eobp nil))
+ (defvar au3-mode--next-newline-already-eobp nil
+   "Flag: 1st call of `au3-mode-next-newline' at end of buffer returns
+`au3-mode-+newline+', second return nil."))
 
 (defun au3-mode-next-newline (&optional recursed)
   (let ((return-result (lambda ()
@@ -310,7 +314,11 @@
 
 (make-variable-buffer-local
  (defvar au3-mode--token-cache nil
-   "Cache for `au3-mode-backward-token'"))
+   "Cache for `au3-mode-backward-token'
+
+Cache contains 2 trees, one to map start positions to tokens, the
+other to map end positions to the same tokens.  See
+`au3-mode--cache-valid-p' and `au3-mode--cache-insert-token'."))
 
 (defun au3-mode--cache-valid-p ()
   (eql (buffer-chars-modified-tick) (car au3-mode--token-cache)))

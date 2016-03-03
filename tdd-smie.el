@@ -8,6 +8,8 @@
 
 (defconst au3-mode-+operator+ ";op;")
 
+(defconst au3-mode-+string+ "string")
+
 (defconst au3-mode-+keyword-list+
   '("And" "ByRef" "Case" "Const" "ContinueLoop" "Dim" "Do" "Else"
     "ElseIf" "EndFunc" "EndIf" "EndSelect" "Exit" "ExitLoop" "For"
@@ -298,6 +300,7 @@
 (defun au3-mode--naive-forward-token ()
   (or (au3-mode-next-newline)
       (au3-mode-next-number)
+      (au3-mode-next-string)
       (au3-mode-next-operator)
       (au3-mode-next-identifier)
       (au3-mode-next-keyword)))
@@ -318,7 +321,9 @@
     (should (equal (au3-mode--run-token-matcher fut "|2@")
                    (cons au3-mode-+number+ "2")))
     (should (equal (au3-mode--run-token-matcher fut "|-3@")
-                   (cons au3-mode-+number+ "-3")))))
+                   (cons au3-mode-+number+ "-3")))
+    (should (equal (au3-mode--run-token-matcher fut "|\"1\"@")
+                   (cons au3-mode-+string+ "1")))))
 
 (make-variable-buffer-local
  (defvar au3-mode--token-cache nil
@@ -511,6 +516,8 @@ other to map end positions to the same tokens.  See
                    (cons au3-mode-+number+ "-3")))
     (should (equal (au3-mode--run-token-matcher fut "$a=@2|")
                    (cons au3-mode-+number+ "2")))
+    (should (equal (au3-mode--run-token-matcher fut "$a=@'1'|")
+                   (cons au3-mode-+string+ "1")))
     (dolist (bufstr_fwlist
              (list (cons "$b _ \n =2;Hello"
                          (list (cons au3-mode-+identifier+ "$b")
@@ -533,11 +540,11 @@ other to map end positions to the same tokens.  See
                                (cons au3-mode-+keyword+ "Local")
                                (cons au3-mode-+identifier+ "$x")
                                (cons au3-mode-+newline+ au3-mode-+newline+)))
-                   (cons "Const _\n$b=6\n"
+                   (cons "Const _\n$b=\"6\"\n"
                          (list (cons au3-mode-+keyword+ "Const")
                                (cons au3-mode-+identifier+ "$b")
                                (cons au3-mode-+operator+ "=")
-                               (cons au3-mode-+number+ "6")
+                               (cons au3-mode-+string+ "6")
                                (cons au3-mode-+newline+ au3-mode-+newline+)))
                    (cons "#cs\n1\n#ce"
                          (list (cons au3-mode-+newline+ au3-mode-+newline+)))
@@ -587,3 +594,85 @@ If $this Then $that
       ;;     (should (equal forward-list
       ;;                    (reverse back-list)))))
       )))
+
+(defun au3-mode-next-string ()
+  (let ((qot (char-after))
+        str
+        dest)
+    (when (or (eql qot ?\') (eql qot ?\"))
+      (let ((start (point))
+            ;; parameter for skip-chars-backward: skip anything but newline
+            ;; and opening quote (i.e. valid content of the string)
+            (not-qot (string ?^ qot ?\n)))
+        (save-excursion
+          (forward-char)                ; skip opening quote
+          (setq
+           str
+           (catch 'done
+             (while t
+               ;; skip anything different from opening quote but stay on same
+               ;; line
+               (skip-chars-forward not-qot)
+               ;; we're either at end of text or matching quote
+               (let ((next (char-after)))
+                 (if (not next)
+                     (throw 'done nil) ; end of text, unterminated string
+                   (forward-char)      ; skip quote
+                   (let ((over (char-after)))
+                     (if (eql over qot)
+                         ;; "" or '' inside string: skip it and let
+                         ;; consuming of token continue
+                         (forward-char)
+                       (throw
+                        'done
+                        ;; replace double '' (or "") by single to return true
+                        ;; value of string
+                        (save-match-data
+                          (replace-regexp-in-string
+                           (string qot qot)
+                           (string qot)
+                           (buffer-substring-no-properties
+                            (1+ start) (1- (setq dest (point)))))))))))))))
+        (when str
+          (goto-char dest)
+          (cons au3-mode-+string+ str))))))
+
+(ert-deftest au3-mode-test-next-string ()
+  "Test `au3-mode-next-string'"
+  :tags '(token)
+  (let ((fut 'au3-mode-next-string))
+    (should (equal (au3-mode--run-token-matcher fut "|\"A\"@")
+                   (cons au3-mode-+string+ "A")))
+    (should (equal (au3-mode--run-token-matcher fut "|'A'@  ")
+                   (cons au3-mode-+string+ "A")))
+    (should (equal (au3-mode--run-token-matcher fut "|\"\"@ \n")
+                   (cons au3-mode-+string+ "")))
+    (should (equal (au3-mode--run-token-matcher fut "|''@\t  ")
+                   (cons au3-mode-+string+ "")))
+    ;; example from documentation
+    ;; https://www.autoitscript.com/autoit3/docs/intro/lang_datatypes.htm
+    (should (equal (au3-mode--run-token-matcher
+                    fut
+                    "|\"here is a \"\"double-quote\"\" - ok?\"@")
+                   (cons au3-mode-+string+
+                         "here is a \"double-quote\" - ok?")))
+    (should
+     (equal
+      (au3-mode--run-token-matcher
+       fut
+       "|'This \"sentence\" contains \"lots\" of \"double-quotes\" does it not?'@")
+      (cons au3-mode-+string+
+            "This \"sentence\" contains \"lots\" of \"double-quotes\" does it not?")))
+    (should
+     (equal
+      (au3-mode--run-token-matcher
+       fut
+       "|\"This \"\"sentence\"\" contains \"\"lots\"\" of \"\"double-quotes\"\" does it not?\"@")
+      (cons au3-mode-+string+
+            "This \"sentence\" contains \"lots\" of \"double-quotes\" does it not?")))
+    ;; unhappy cases
+    (dolist (not-a-string-token
+             '("'1\"" "\"1'" "'" "\"" "\"1" "'1" "1" "'1\n'" "\"1\n\""))
+      (should-not (au3-mode--run-token-matcher
+                   fut
+                   (concat "|@" not-a-string-token))))))

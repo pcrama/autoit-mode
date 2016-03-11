@@ -1,3 +1,4 @@
+(require 'avl-tree)
 (defconst au3-mode-+number+ "number")
 
 (defconst au3-mode-+identifier+ "identifier")
@@ -54,7 +55,9 @@
    au3-mode-+number+))
 
 (defun au3-mode-next-identifier ()
-  (au3-mode-next-regexp-token "[@$][A-Za-z_][A-Za-z0-9_]*"
+  "Must be called after `au3-mode-next-keyword' as otherwise,
+keywords will be mistaken as identifiers"
+  (au3-mode-next-regexp-token "[@$]?[A-Za-z_][A-Za-z0-9_]*"
                               au3-mode-+identifier+))
 
 (defun au3-mode-next-keyword ()
@@ -302,11 +305,43 @@
       (au3-mode-next-number)
       (au3-mode-next-string)
       (au3-mode-next-operator)
-      (au3-mode-next-identifier)
-      (au3-mode-next-keyword)))
+      (au3-mode-next-keyword)
+      (au3-mode-next-identifier)))
+
+(defun au3-mode--peek-token (skip movement)
+  (let (next-token last-pos)
+    (setq next-token
+          (save-excursion
+            (prog2
+                (funcall skip)
+                (funcall movement)
+              (setq last-pos (point)))))
+    (cons next-token last-pos)))
 
 (defun au3-mode--forward-token-and-update-cache (beg)
-  (au3-mode--naive-forward-token))
+  (let ((result (au3-mode--naive-forward-token)))
+    ;; mutate result if necessary
+    (when (eq (car result) au3-mode-+newline+)
+      (let* ((tok.pos (au3-mode--peek-token 'au3-mode-skip-to-next-token
+                                            'au3-mode--naive-forward-token))
+             (next-token (car tok.pos))
+             (last-pos (cdr tok.pos)))
+        (when (and (eq (car next-token) au3-mode-+newline+)
+                   (member (cdr next-token)
+                           '("EndFunc" "Wend" "Else" "EndIf")))
+          (goto-char last-pos)
+          (setq result (cons au3-mode-+keyword+
+                             (concat ";lf;" (cdr next-token)))))))
+    (when (and (eq (car result) au3-mode-+keyword+)
+               (member (cdr result) '("Then" "Else")))
+      (let* ((tok.pos (au3-mode--peek-token 'au3-mode-skip-to-next-token
+                                            'au3-mode--naive-forward-token))
+             (next-token (car tok.pos))
+             (last-pos (cdr tok.pos)))
+        (when (eq (car next-token) au3-mode-+newline+)
+          (goto-char last-pos)
+          (setcdr result (concat (cdr result) ";lf;")))))
+    result))
 
 (defun au3-mode-forward-token ()
   (au3-mode-skip-to-next-token)
@@ -323,7 +358,17 @@
     (should (equal (au3-mode--run-token-matcher fut "|-3@")
                    (cons au3-mode-+number+ "-3")))
     (should (equal (au3-mode--run-token-matcher fut "|\"1\"@")
-                   (cons au3-mode-+string+ "1")))))
+                   (cons au3-mode-+string+ "1")))
+    (should (equal (au3-mode--run-token-matcher fut "If $a| THEN@ f()")
+                   (cons au3-mode-+keyword+ "Then")))
+    (should (equal (au3-mode--run-token-matcher fut "If $a| THEN@_\n f()")
+                   (cons au3-mode-+keyword+ "Then")))
+    (should (equal (au3-mode--run-token-matcher fut "If $a Then |_\n f@()")
+                   (cons au3-mode-+identifier+ "f")))
+    (should (equal (au3-mode--run-token-matcher fut "If $a| Then ; comment\n@ f()\nendif")
+                   (cons au3-mode-+keyword+ "Then;lf;")))
+    (should (equal (au3-mode--run-token-matcher fut "If $a Then\nf()|\nElse\n@endif")
+                   (cons au3-mode-+keyword+ ";lf;Else;lf;")))))
 
 (make-variable-buffer-local
  (defvar au3-mode--token-cache nil
@@ -676,3 +721,54 @@ If $this Then $that
       (should-not (au3-mode--run-token-matcher
                    fut
                    (concat "|@" not-a-string-token))))))
+
+(require 'smie)
+(defvar sample-smie-grammar
+  (smie-prec2->grammar
+   (smie-merge-prec2s
+    (smie-bnf->prec2
+     `((id)
+       (exp ("If" exp "Then;lf;" inst-list "EndIf")
+            ("If" exp "Then;lf;" inst-list "Else;lf;" inst-list "EndIf")
+            ("If" exp "Then" exp)
+            ("While" exp ";lf;" exp "WEnd")
+            ("Func" inst-list "EndFunc"))
+       (inst-list (inst-list ,au3-mode-+newline+ inst-list)
+                  (exp))
+       ;; (exp (exp "" exp)
+       ;;      (exp "-" exp)
+       ;;      (exp "*" exp)
+       ;;      (exp "/" exp))
+       )
+     `((assoc ,au3-mode-+newline+)))
+    (smie-precs->prec2
+     `((assoc ,au3-mode-+newline+)
+       (assoc ",")
+       (assoc "+" "-") (assoc "*" "/"))))))
+
+(defun au3-mode--smie-forward-token ()
+  (ignore-errors
+    (let ((result (au3-mode-forward-token)))
+      (when result
+        (car result)))))
+
+(defun au3-mode--smie-backward-token ()
+  (ignore-errors
+    (let ((result (au3-mode-backward-token)))
+      (when result
+        (car result)))))
+
+(defun au3-mode--smie-rule (method arg)
+  (if (eq method :list-intro)
+      nil
+    0))
+
+(defun au3-mode--smie-setup ()
+  (smie-setup sample-smie-grammar
+              'au3-mode--smie-rule
+              ;; :forward-token 'au3-mode--smie-forward-token
+              ;; :backward-token 'au3-mode--smie-backward-token
+              :forward-token 'au3-mode-simplest-forward-token
+              :backward-token 'au3-mode-simplest-backward-token))
+
+(provide 'tdd-smie)

@@ -1,5 +1,8 @@
+;; run test from scratch with
+;;
+;; runemacs -Q --eval '(progn (load "~/Desktop/autoit-mode/tdd-smie.el") (ert t))'
+
 (require 'avl-tree)
-(defconst au3-mode-+number+ "number")
 
 (defconst au3-mode-+identifier+ "identifier")
 
@@ -11,12 +14,23 @@
 
 (defconst au3-mode-+string+ "string")
 
+(defconst au3-mode-+number+ ";number;")
+
 (defconst au3-mode-+keyword-list+
   '("And" "ByRef" "Case" "Const" "ContinueLoop" "Dim" "Do" "Else"
     "ElseIf" "EndFunc" "EndIf" "EndSelect" "Exit" "ExitLoop" "For"
     "Func" "Global" "If" "In" "Local" "Next" "Not" "Or" "ReDim"
     "Return" "Select" "Step" "Then" "To" "Until" "WEnd" "While"
     "With" "EndWith" "Switch" "EndSwitch"))
+
+(defconst au3-mode-+keyword-normalization+
+  (let ((h (make-hash-table :test 'equal)))
+    (mapc (lambda (x) (puthash (downcase x) x h))
+          au3-mode-+keyword-list+)
+    h))
+
+(defun au3-mode--normalize-keyword (x &optional default)
+  (gethash (downcase x) au3-mode-+keyword-normalization+ default))
 
 (defconst au3-mode-+keyword-regexp+
   (concat (regexp-opt au3-mode-+keyword-list+ t) "\\>"))
@@ -31,12 +45,15 @@
   (skip-chars-forward " \t")
   (let ((after (if (eobp) nil (char-after))))
     (when (and after (equal after au3-mode-+continuation+))
-      (skip-chars-forward "^\n")
-      ;; No recursion: after each continuation, a new token must come, there
-      ;; may not be a new continuation or comment.
-      (unless (eobp)
-        (forward-char)
-        (skip-chars-forward " \t")))))
+      ;; leading `.' in regexp to skip over au3-mode-+continuation+ char
+      ;; without having to interpolate it into the regular expression
+      (when (looking-at ".[ \t]*\\(;[^\n]*\\)?$")
+        (skip-chars-forward "^\n")
+        ;; No recursion: after each continuation, a new token must come, there
+        ;; may not be a new continuation or comment.
+        (unless (eobp)
+          (forward-char)
+          (skip-chars-forward " \t"))))))
 
 (defun au3-mode-next-regexp-token (regexp type)
   (save-match-data
@@ -48,17 +65,6 @@
   (au3-mode-next-regexp-token
    "\\([&|^*/+=-]?=\\|[&|^*/+-]\\)"
    au3-mode-+operator+))
-
-(defun au3-mode-next-number ()
-  (au3-mode-next-regexp-token
-   "[-+]?[0-9]+\\(\\.[0-9]+\\)?\\([eE][-+]?[0-9]+\\)?"
-   au3-mode-+number+))
-
-(defun au3-mode-next-identifier ()
-  "Must be called after `au3-mode-next-keyword' as otherwise,
-keywords will be mistaken as identifiers"
-  (au3-mode-next-regexp-token "[@$]?[A-Za-z_][A-Za-z0-9_]*"
-                              au3-mode-+identifier+))
 
 (defun au3-mode-next-keyword ()
   (let ((case-fold-search t))
@@ -88,7 +94,7 @@ keywords will be mistaken as identifiers"
                          (if (eobp)
                              (setq au3-mode--next-newline-already-eobp t)
                            (skip-chars-backward "\t "))
-                         (cons au3-mode-+newline+ au3-mode-+newline+))))
+                         au3-mode-+newline+)))
     (cond ((and recursed (eobp))
            (funcall return-result))
           ((looking-at-p "\n")
@@ -112,10 +118,18 @@ keywords will be mistaken as identifiers"
           (recursed
            (funcall return-result)))))
 
-(defun au3-mode--run-token-matcher (matcher str &optional start stop)
-  "Test MATCHER on STR."
+(defun au3-mode--run-token-matcher (matcher str &optional start stop post-validation)
+  "Test MATCHER on STR.
+
+Optional parameters:
+- start (default \"|\") where to put point in `str' before running `matcher'
+- stop (default \"@\") where to expect point in `str' after running `matcher'
+- post-validation (default (lambda (start-pos token end-pos) token) extra
+  validation function"
   (let ((start (or start "|"))
         (stop (or stop "@"))
+        (post-validation (or post-validation
+                             (lambda (start-pos token end-pos) token)))
         start-pos
         end-pos
         result)
@@ -136,7 +150,7 @@ keywords will be mistaken as identifiers"
       (goto-char start-pos)
       (setq result (funcall matcher))
       (if (equal (point) end-pos)
-          result
+          (funcall post-validation start-pos result end-pos)
         (error "Landed on %d not at %d" (point) end-pos)))))
 
 (defun au3-mode--collect-tokens (fun &optional buffer)
@@ -147,74 +161,13 @@ keywords will be mistaken as identifiers"
         (while t
           (setq token (funcall fun))
           (if (or (null token)
-                  (and (equal last-pos (point))
-                       (equal last-token token)))
+                  (equal last-pos (point)))
               (throw 'done nil)
+            (message "%s %s %s %s %s" fun buffer last-pos token (point))
             (setq last-pos (point)
                   last-token token)
             (push token result))))
       (nreverse result))))
-
-(ert-deftest au3-mode-test-next-number ()
-  "Test `au3-mode-next-number'"
-  :tags '(token)
-  (let ((fut 'au3-mode-next-number))    ; fut=function-under-test
-    ;; Test normal numbers
-    (should (equal (au3-mode--run-token-matcher fut "|12345@")
-                   (cons au3-mode-+number+ "12345")))
-    (should (equal (au3-mode--run-token-matcher fut "|-123456@")
-                   (cons au3-mode-+number+ "-123456")))
-    (should (equal (au3-mode--run-token-matcher fut "|+1234567@")
-                   (cons au3-mode-+number+ "+1234567")))
-    (should (equal (au3-mode--run-token-matcher fut "|-1.23456E-02@")
-                   (cons au3-mode-+number+ "-1.23456E-02")))
-    (should (equal (au3-mode--run-token-matcher fut "|1.2E7@")
-                   (cons au3-mode-+number+ "1.2E7")))
-    (should (equal (au3-mode--run-token-matcher fut "|1.2E+7@")
-                   (cons au3-mode-+number+ "1.2E+7")))
-    ;; Test normal number followed by other text
-    (should (equal (au3-mode--run-token-matcher fut "|12345@+678")
-                   (cons au3-mode-+number+ "12345")))
-    (should (equal (au3-mode--run-token-matcher fut "|-2@\nabc")
-                   (cons au3-mode-+number+ "-2")))
-    ;; Exceptional cases: these aren't numbers or cursor is in wrong place
-    (should (equal (au3-mode--run-token-matcher fut "|@ 1")
-                   nil))
-    (should (equal (au3-mode--run-token-matcher fut "|@if 1 > 2 then print \"Hello\"")
-                   nil))
-    (should (equal (au3-mode--run-token-matcher fut "|@+ 1234567")
-                   nil))
-    (should (equal (au3-mode--run-token-matcher fut "|@\"1234\"")
-                   nil))))
-
-(ert-deftest au3-mode-test-next-identifier ()
-  "Test `au3-mode-next-identifier'"
-  :tags '(token)
-  (let ((fut 'au3-mode-next-identifier)) ; fut=function-under-test
-    ;; Test normal identifier
-    (should (equal (au3-mode--run-token-matcher fut "|@CRLF>" "|" ">")
-                   (cons au3-mode-+identifier+ "@CRLF")))
-    (should (equal (au3-mode--run-token-matcher fut "|@ScriptName>" "|" ">")
-                   (cons au3-mode-+identifier+ "@ScriptName")))
-    (should (equal (au3-mode--run-token-matcher fut "|$var@")
-                   (cons au3-mode-+identifier+ "$var")))
-    (should (equal (au3-mode--run-token-matcher fut "|$snake_case@")
-                   (cons au3-mode-+identifier+ "$snake_case")))
-    (should (equal (au3-mode--run-token-matcher fut "|$x1@")
-                   (cons au3-mode-+identifier+ "$x1")))
-    (should (equal (au3-mode--run-token-matcher fut "|$x@")
-                   (cons au3-mode-+identifier+ "$x")))
-    ;; Exceptional cases: these aren't identifiers or cursor is in wrong place
-    (should (equal (au3-mode--run-token-matcher fut "|@ $id")
-                   nil))
-    (should (equal (au3-mode--run-token-matcher fut "|@if $id > @HOUR then print \"Hello\"")
-                   nil))
-    (should (equal (au3-mode--run-token-matcher fut "|@+ $id")
-                   nil))
-    (should (equal (au3-mode--run-token-matcher fut "|@\"@Hello\"")
-                   nil))
-    (should (equal (au3-mode--run-token-matcher fut "|>@1" "|" ">")
-                   nil))))
 
 (ert-deftest au3-mode-test-next-keyword ()
   "Test `au3-mode-next-keyword'"
@@ -252,13 +205,13 @@ keywords will be mistaken as identifiers"
     (au3-mode--run-token-matcher fut "\tLocal $a = 2|@\n\tConst $B = 23")
     (au3-mode--run-token-matcher fut "\tLocal $a = 2\n\tConst $B = 23| @")
     (au3-mode--run-token-matcher fut "\tLocal $a = 2\n\tConst $B = | \t_ @")
-    (au3-mode--run-token-matcher fut "\tLocal $a = 2| @; local definitio@\n\tConst $B = 23")))
+    (au3-mode--run-token-matcher fut "\tLocal $a = 2| @; local definition\n\tConst $B = 23")))
 
 (ert-deftest au3-mode-test-next-newline ()
   "Test `au3-mode-next-newline'"
   :tags '(token)
   (let ((fut 'au3-mode-next-newline)
-        (exp-result (cons au3-mode-+newline+ au3-mode-+newline+)))
+        (exp-result au3-mode-+newline+))
     (should (equal (au3-mode--run-token-matcher fut "|@")
                    exp-result))
     (should (equal (au3-mode--run-token-matcher fut "|\n   @")
@@ -300,14 +253,6 @@ keywords will be mistaken as identifiers"
                    (cons au3-mode-+operator+ "+")))
     (should (not (au3-mode--run-token-matcher fut "|@$a=")))))
 
-(defun au3-mode--naive-forward-token ()
-  (or (au3-mode-next-newline)
-      (au3-mode-next-number)
-      (au3-mode-next-string)
-      (au3-mode-next-operator)
-      (au3-mode-next-keyword)
-      (au3-mode-next-identifier)))
-
 (defun au3-mode--peek-token (skip movement)
   (let (next-token last-pos)
     (setq next-token
@@ -317,58 +262,6 @@ keywords will be mistaken as identifiers"
                 (funcall movement)
               (setq last-pos (point)))))
     (cons next-token last-pos)))
-
-(defun au3-mode--forward-token-and-update-cache (beg)
-  (let ((result (au3-mode--naive-forward-token)))
-    ;; mutate result if necessary
-    (when (eq (car result) au3-mode-+newline+)
-      (let* ((tok.pos (au3-mode--peek-token 'au3-mode-skip-to-next-token
-                                            'au3-mode--naive-forward-token))
-             (next-token (car tok.pos))
-             (last-pos (cdr tok.pos)))
-        (when (and (eq (car next-token) au3-mode-+newline+)
-                   (member (cdr next-token)
-                           '("EndFunc" "Wend" "Else" "EndIf")))
-          (goto-char last-pos)
-          (setq result (cons au3-mode-+keyword+
-                             (concat ";lf;" (cdr next-token)))))))
-    (when (and (eq (car result) au3-mode-+keyword+)
-               (member (cdr result) '("Then" "Else")))
-      (let* ((tok.pos (au3-mode--peek-token 'au3-mode-skip-to-next-token
-                                            'au3-mode--naive-forward-token))
-             (next-token (car tok.pos))
-             (last-pos (cdr tok.pos)))
-        (when (eq (car next-token) au3-mode-+newline+)
-          (goto-char last-pos)
-          (setcdr result (concat (cdr result) ";lf;")))))
-    result))
-
-(defun au3-mode-forward-token ()
-  (au3-mode-skip-to-next-token)
-  (let ((here (point)))
-    (or (au3-mode--cache-get-token-from-beg here)
-        (au3-mode--forward-token-and-update-cache here))))
-
-(ert-deftest au3-mode-test-forward-token ()
-  "Test `au3-mode-forward-token'"
-  :tags '(token)
-  (let ((fut 'au3-mode-forward-token))
-    (should (equal (au3-mode--run-token-matcher fut "|2@")
-                   (cons au3-mode-+number+ "2")))
-    (should (equal (au3-mode--run-token-matcher fut "|-3@")
-                   (cons au3-mode-+number+ "-3")))
-    (should (equal (au3-mode--run-token-matcher fut "|\"1\"@")
-                   (cons au3-mode-+string+ "1")))
-    (should (equal (au3-mode--run-token-matcher fut "If $a| THEN@ f()")
-                   (cons au3-mode-+keyword+ "Then")))
-    (should (equal (au3-mode--run-token-matcher fut "If $a| THEN@_\n f()")
-                   (cons au3-mode-+keyword+ "Then")))
-    (should (equal (au3-mode--run-token-matcher fut "If $a Then |_\n f@()")
-                   (cons au3-mode-+identifier+ "f")))
-    (should (equal (au3-mode--run-token-matcher fut "If $a| Then ; comment\n@ f()\nendif")
-                   (cons au3-mode-+keyword+ "Then;lf;")))
-    (should (equal (au3-mode--run-token-matcher fut "If $a Then\nf()|\nElse\n@endif")
-                   (cons au3-mode-+keyword+ ";lf;Else;lf;")))))
 
 (make-variable-buffer-local
  (defvar au3-mode--token-cache nil
@@ -399,26 +292,103 @@ other to map end positions to the same tokens.  See
 (defun au3-mode--cache-entry-token (x)
   (cdr (cdr x)))
 
+(defun au3-mode--cache-make-entry (token start end)
+  (cons end (cons start token)))
+
 (defun au3-mode--cache-compare-beg (a b)
+  "AVL tree comparison function (used in forward direction)
+
+The AVL tree must map ranges to tokens and is used to find back
+tokens based on the point being just before or inside the token.
+
+This function has two uses:
+1. For the AVL library to order things so it can build the tree:
+   2 ranges must compare `<' if their beginning offsets are `<'.
+2. For autoit-mode to find a token by giving a point just before
+   or inside the token (e.g. for range (2, 4) and 1<=point<=7):
+   1234567: point
+   ffftttt: (au3-mode--cache-compare-beg (range|start=2 end=4) point)
+   tffffff: (au3-mode--cache-compare-beg point (range|start=2 end=4))
+   See how the overlap of `f' (nil) for 2 and 3 means that the
+   AVL tree will return the token that starts after point=2 and
+   ends just before point=4 when queried with point=2 or
+   point=3."
   (cond ((and (consp a) (consp b))
          (< (au3-mode--cache-entry-beg a) (au3-mode--cache-entry-beg b)))
         ((and (consp a) (numberp b))
-         (< (au3-mode--cache-entry-beg a) b))
+         (<= (au3-mode--cache-entry-end a) b))
         ((and (numberp a) (consp b))
          (< a (au3-mode--cache-entry-beg b)))
         (t (error "Not reached: a=%s b=%s" a b))))
 
+(ert-deftest test-au3-mode--cache-compare-beg ()
+  "Test `au3-mode--cache-compare-beg'"
+  :tags '(util)
+  (let ((long-entry (au3-mode--cache-make-entry "make" 11 15))
+        ;; relative position of entries matters for tests
+        (short-entry (au3-mode--cache-make-entry "(" 21 22)))
+    (dolist (entry (list long-entry short-entry))
+      ;; point in front of token (or inside token) compares equal to the token's
+      ;; range (i.e. both < comparisons are nil)
+      (dotimes (idx (- (au3-mode--cache-entry-end entry)
+                       (au3-mode--cache-entry-beg entry)))
+        (should-not (au3-mode--cache-compare-beg entry (+ idx (au3-mode--cache-entry-beg entry))))
+        (should-not (au3-mode--cache-compare-beg (+ idx (au3-mode--cache-entry-beg entry)) entry)))
+      ;; point just after token compares as bigger than token's range
+      (should (au3-mode--cache-compare-beg entry (au3-mode--cache-entry-end entry)))
+      (should-not (au3-mode--cache-compare-beg (au3-mode--cache-entry-end entry) entry)))
+    ;; comparing ranges
+    (should (au3-mode--cache-compare-beg long-entry short-entry))
+    (should-not (au3-mode--cache-compare-beg short-entry long-entry))))
+
 (defun au3-mode--cache-compare-end (a b)
+  "AVL tree comparison function (used in backward direction)
+
+The AVL tree must map ranges to tokens and is used to find back
+tokens based on the point being just after or inside the token.
+
+This function has two uses:
+1. For the AVL library to order things so it can build the tree:
+   2 ranges must compare `<' if their end offsets are `<'.
+2. For autoit-mode to find a token by giving a point just after
+   or inside the token (e.g. for range (2, 4) and 1<=point<=7):
+   1234567: point
+   ffffttt: (au3-mode--cache-compare-end (range|start=2 end=4) point)
+   ttfffff: (au3-mode--cache-compare-end point (range|start=2 end=4))
+   See how the overlap of `f' (nil) for 3 and 4 means that the
+   AVL tree will return the token that starts after point=2 and
+   ends just before point=4 when queried with point=3 or
+   point=4."
   (cond ((and (consp a) (consp b))
          (< (au3-mode--cache-entry-end a) (au3-mode--cache-entry-end b)))
         ((and (consp a) (numberp b))
          (< (au3-mode--cache-entry-end a) b))
         ((and (numberp a) (consp b))
-         (< a (au3-mode--cache-entry-end b)))
+         (<= a (au3-mode--cache-entry-beg b)))
         (t (error "Not reached: a=%s b=%s" a b))))
 
+(ert-deftest test-au3-mode--cache-compare-end ()
+  "Test `au3-mode--cache-compare-end'"
+  :tags '(util)
+  (let ((long-entry (au3-mode--cache-make-entry "make" 11 15))
+        ;; relative position of entries matters for tests
+        (short-entry (au3-mode--cache-make-entry "(" 21 22)))
+    (dolist (entry (list long-entry short-entry))
+      ;; point after token (or inside token) compares equal to the token's
+      ;; range (i.e. both < comparisons are nil)
+      (dotimes (idx (- (au3-mode--cache-entry-end entry)
+                       (au3-mode--cache-entry-beg entry)))
+        (should-not (au3-mode--cache-compare-end entry (+ 1 idx (au3-mode--cache-entry-beg entry))))
+        (should-not (au3-mode--cache-compare-end (+ 1 idx (au3-mode--cache-entry-beg entry)) entry)))
+      ;; point just before token compares as smaller than token's range
+      (should-not (au3-mode--cache-compare-end entry (au3-mode--cache-entry-beg entry)))
+      (should (au3-mode--cache-compare-end (au3-mode--cache-entry-beg entry) entry)))
+    ;; comparing ranges
+    (should (au3-mode--cache-compare-end long-entry short-entry))
+    (should-not (au3-mode--cache-compare-end short-entry long-entry))))
+
 (defun au3-mode--cache-insert-token (token start end)
-  (let ((new-entry (cons end (cons start token))))
+  (let ((new-entry (au3-mode--cache-make-entry token start end)))
     (unless (au3-mode--cache-valid-p)
       (setq au3-mode--token-cache
             (cons (buffer-chars-modified-tick)
@@ -444,85 +414,54 @@ other to map end positions to the same tokens.  See
       (goto-char (au3-mode--cache-entry-beg result))
       (au3-mode--cache-entry-token result))))
 
-(defun au3-mode--backward-token-and-update-cache (here)
-  ;; Move back to a position known to be a token start and advance by token
-  ;; until you find back the current position.
-  (let (rev-token-list
-        au3-mode--bt-result)
-    (save-excursion
-      (let ((lbp (line-beginning-position)))
-        (if (= (point) lbp)
-            (forward-line -1)
-          (goto-char lbp)))
-      (let* ((state 'normal)
-             (comment-nesting-depth 0))
-        ;; State machine:
-        ;; - normal: if line doesn't match anything related to comments and
-        ;;   isn't empty, we're good.
-        ;;   STATE EXITS:
-        ;;   -> normal (if empty, or line-comment)
-        ;;   -> block-comment (#ce or #comments-end, depth=1)
-        ;;   -> done otherwise (or if bobp)
-        ;; - block-comment: handle nesting
-        ;;   STATE EXITS:
-        ;;   -> normal (if #cs or #comments-start and depth would drop to 0,
-        ;;      otherwise depth--)
-        ;;   -> block-comment (#ce or #comments-end, depth++)
-        ;;   -> done (if bobp) [this effectively ignores nesting errors]
-        (catch 'done
-          (while t
-            (when (bobp) (throw 'done nil))
-            (cond
-             ((eql state 'normal)
-              (cond ((looking-at-p au3-mode--+multi-line-comment-end-regexp+)
-                     (setq state 'block-comment
-                           comment-nesting-depth 1))
-                    ((looking-at-p "^[ \t]*_?[ \t]*\\(;.*\\|\\)$")
-                     ;; nothing to do.
-                     )
-                    (t
-                     (throw 'done nil))))
-             ((eql state 'block-comment)
-              (cond ((looking-at-p au3-mode--+multi-line-comment-end-regexp+)
-                     (setq state 'block-comment
-                           comment-nesting-depth (1+ comment-nesting-depth)))
-                    ((looking-at-p au3-mode--+multi-line-comment-start-regexp+)
-                     (if (eql comment-nesting-depth 1)
-                         (setq state 'normal)
-                       (setq comment-nesting-depth
-                             (1- comment-nesting-depth)))))))
-            (forward-line -1))))
-      ;; Now we're at a point where we know a token starts -> scan forward
-      ;; until we get to original point.
-      (let (temp)
-        (while (< (setq temp (point)) here)
-          (let ((token (au3-mode-forward-token)))
-            (if token
-                (push (cons temp (au3-mode--cache-insert-token
-                                  token temp (point)))
-                      rev-token-list)
-              (error "Token not recognized at %d-%d" temp (point)))
-            (when (< (point) here)
-              (au3-mode-skip-to-next-token)
-              (when (> (point) here)
-                ;; we started with (point) before the target, then skipped
-                ;; only over unimportant stuff and shot past the target -> the
-                ;; last token we saw is the one we wanted: fake that we found
-                ;; it.
-                (goto-char here))))))
-      (if (= (point) here)
-          (setq au3-mode--bt-result (car rev-token-list))
-        (error "Not started from token boundary: point=%d here=%d\n\t%s"
-               (point) here rev-token-list)))
-    (when au3-mode--bt-result
-      (goto-char (car au3-mode--bt-result))
-      (cdr au3-mode--bt-result))))
-
-(defun au3-mode-backward-token ()
-  (skip-chars-backward " \t")
-  (let ((here (point)))
-   (or (au3-mode--cache-get-token-from-end here)
-       (au3-mode--backward-token-and-update-cache here))))
+(defun au3-mode--skip-backward-over-complete-newline-token ()
+  "Moves point back to beginning of line that isn't inside a
+au3-mode-+newline+ token. "
+  (let ((lbp (line-beginning-position)))
+    (if (= (point) lbp)
+        (forward-line -1)
+      (goto-char lbp)))
+  (let* ((state 'normal)
+         (comment-nesting-depth 0))
+    ;; State machine:
+    ;; - normal: if line doesn't match anything related to comments and
+    ;;   isn't empty, we're good.
+    ;;   STATE EXITS:
+    ;;   -> normal (if empty, or line-comment, or #cs/#comments-start [ignore
+    ;;      nesting error, increases number of places in middle of
+    ;;      au3-mode-+newline+ token where token is skipped correctly])
+    ;;   -> block-comment (#ce or #comments-end, depth=1)
+    ;;   -> done otherwise (or if bobp)
+    ;; - block-comment: handle nesting
+    ;;   STATE EXITS:
+    ;;   -> normal (if #cs or #comments-start and depth would drop to 0,
+    ;;      otherwise depth--)
+    ;;   -> block-comment (#ce or #comments-end, depth++)
+    ;;   -> done (if bobp) [this effectively ignores nesting errors]
+    (catch 'done
+      (while t
+        (when (bobp) (throw 'done nil))
+        (cond
+         ((eql state 'normal)
+          (cond ((looking-at au3-mode--+multi-line-comment-end-regexp+)
+                 (setq state 'block-comment
+                       comment-nesting-depth 1))
+                ((or (looking-at "^[ \t]*_?[ \t]*\\(;.*\\|\\)$")
+                     (looking-at au3-mode--+multi-line-comment-start-regexp+))
+                 ;; nothing to do.
+                 )
+                (t
+                 (throw 'done nil))))
+         ((eql state 'block-comment)
+          (cond ((looking-at-p au3-mode--+multi-line-comment-end-regexp+)
+                 (setq state 'block-comment
+                       comment-nesting-depth (1+ comment-nesting-depth)))
+                ((looking-at-p au3-mode--+multi-line-comment-start-regexp+)
+                 (if (eql comment-nesting-depth 1)
+                     (setq state 'normal)
+                   (setq comment-nesting-depth
+                         (1- comment-nesting-depth)))))))
+        (forward-line -1)))))
 
 (ert-deftest au3-mode-test-token-cache ()
   "Test `au3-mode--cache-get-token-from-end',
@@ -543,102 +482,16 @@ other to map end positions to the same tokens.  See
     (should (equal (point) 1))
     (should (not (au3-mode--cache-get-token-from-end 0)))
     (should (not (au3-mode--cache-get-token-from-end 100)))
-    (au3-mode--cache-insert-token "B" 3 4)
-    (should (equal (au3-mode--cache-get-token-from-end 4)
-                   "B"))
+    (au3-mode--cache-insert-token "BCD" 3 6)
+    (should (equal (au3-mode--cache-get-token-from-end 6) "BCD"))
     (should (equal (point) 3))
-    (should (equal (au3-mode--cache-get-token-from-end 2)
-                   "A"))
-    (should (equal (point) 1))))
-
-(ert-deftest au3-mode-test-backward-token ()
-  "Test `au3-mode-backward-token'"
-  :tags '(token)
-  (let ((fut 'au3-mode-backward-token))
-    (should (equal (au3-mode--run-token-matcher fut "@2|")
-                   (cons au3-mode-+number+ "2")))
-    (should (equal (au3-mode--run-token-matcher fut "@-3|")
-                   (cons au3-mode-+number+ "-3")))
-    (should (equal (au3-mode--run-token-matcher fut "$a=@2|")
-                   (cons au3-mode-+number+ "2")))
-    (should (equal (au3-mode--run-token-matcher fut "$a=@'1'|")
-                   (cons au3-mode-+string+ "1")))
-    (dolist (bufstr_fwlist
-             (list (cons "$b _ \n =2;Hello"
-                         (list (cons au3-mode-+identifier+ "$b")
-                               (cons au3-mode-+operator+ "=")
-                               (cons au3-mode-+number+ "2")
-                               (cons au3-mode-+newline+ au3-mode-+newline+)))
-                   (cons "$b = 3 ; Hello\n ; other comment"
-                         (list (cons au3-mode-+identifier+ "$b")
-                               (cons au3-mode-+operator+ "=")
-                               (cons au3-mode-+number+ "3")
-                               (cons au3-mode-+newline+ au3-mode-+newline+)))
-                   (cons "Const $b=4 + 5\nLocal $x\n"
-                         (list (cons au3-mode-+keyword+ "Const")
-                               (cons au3-mode-+identifier+ "$b")
-                               (cons au3-mode-+operator+ "=")
-                               (cons au3-mode-+number+ "4")
-                               (cons au3-mode-+operator+ "+")
-                               (cons au3-mode-+number+ "5")
-                               (cons au3-mode-+newline+ au3-mode-+newline+)
-                               (cons au3-mode-+keyword+ "Local")
-                               (cons au3-mode-+identifier+ "$x")
-                               (cons au3-mode-+newline+ au3-mode-+newline+)))
-                   (cons "Const _\n$b=\"6\"\n"
-                         (list (cons au3-mode-+keyword+ "Const")
-                               (cons au3-mode-+identifier+ "$b")
-                               (cons au3-mode-+operator+ "=")
-                               (cons au3-mode-+string+ "6")
-                               (cons au3-mode-+newline+ au3-mode-+newline+)))
-                   (cons "#cs\n1\n#ce"
-                         (list (cons au3-mode-+newline+ au3-mode-+newline+)))
-                   (cons "#cs\n1\n#ce\n  \n\t\n"
-                         (list (cons au3-mode-+newline+ au3-mode-+newline+)))
-                   (cons "#cs\n1\n#ce\n  \n\t\n #comments-start\n#ce"
-                         (list (cons au3-mode-+newline+ au3-mode-+newline+)))
-                   ;; can't test nested comments: forward-token doesn't
-                   ;; support it
-                   ;; (cons "#cs\n#cs\n; 1\n#ce\n  \n\t#ce"
-                   ;;       (list (cons au3-mode-+newline+ au3-mode-+newline+)))
-                   ))
-      (with-temp-buffer
-        (insert (car bufstr_fwlist))
-        (goto-char (point-min))
-        (let ((forward-list (au3-mode--collect-tokens 'au3-mode-forward-token)))
-          (should (equal forward-list (cdr bufstr_fwlist)))
-          (should (equal (point) (point-max)))
-          (let ((back-list (au3-mode--collect-tokens 'au3-mode-backward-token)))
-            (should (equal back-list
-                           (reverse (cdr bufstr_fwlist))))
-            (should (equal (point) (point-min)))))))
-    (with-temp-buffer
-      (insert "Local $a = 3 ; initial value
-               If $a == 2 - 4 Then _
-                     $b = 2
-               #cs
-               Long comment with code in it:
-If $this Then $that
-               #ce")
-      (goto-char (point-min))
-      (let ((forward-list (au3-mode--collect-tokens 'au3-mode-forward-token)))
-        (should (equal (point) (point-max)))
-        (let ((back-list (au3-mode--collect-tokens 'au3-mode-backward-token)))
-          (should (equal (point) (point-min)))
-          (should (equal forward-list
-                         (reverse back-list)))))
-      ;; (let ((back-list (au3-mode--collect-tokens 'au3-mode-backward-token)))
-      ;;   (should (equal back-list
-      ;;                  (list (cons au3-mode-+newline+ au3-mode-+newline+)
-      ;;                        (cons au3-mode-+number+ "2")
-      ;;                        (cons au3-mode-+operator+ "=")
-      ;;                        (cons au3-mode-+identifier+ "$b"))))
-      ;;   (should (equal (point) (point-min)))
-      ;;   (let ((forward-list (au3-mode--collect-tokens 'au3-mode-forward-token)))
-      ;;     (should (equal (point) (point-max)))
-      ;;     (should (equal forward-list
-      ;;                    (reverse back-list)))))
-      )))
+    (should (equal (au3-mode--cache-get-token-from-end 2) "A"))
+    (should (equal (point) 1))
+    ;; Should work from the middle of a token, too
+    (should (equal (au3-mode--cache-get-token-from-end 4) "BCD"))
+    (should (equal (point) 3))
+    (should (equal (au3-mode--cache-get-token-from-beg 4) "BCD"))
+    (should (equal (point) 6))))
 
 (defun au3-mode-next-string ()
   (let ((qot (char-after))
@@ -770,5 +623,253 @@ If $this Then $that
               ;; :backward-token 'au3-mode--smie-backward-token
               :forward-token 'au3-mode-simplest-forward-token
               :backward-token 'au3-mode-simplest-backward-token))
+
+(defun au3-mode--simplest-forward-token-internal ()
+  "Advance point and return token after point
+
+Assumes it is called at a token boundary."
+  (let ((start (point))
+        (after (char-after)))
+    (cond ((eobp) nil)
+          ((or (eolp) (eql after au3-mode-+comment+))
+           (au3-mode-next-newline))
+          ((looking-at "[+-]?[0-9]+\\(?:\\.[0-9]+\\)?\\(?:[eE][+-]?[0-9]+\\)?")
+           (goto-char (match-end 0))
+           au3-mode-+number+)
+          ((looking-at (regexp-opt '("=" "+=" "-" "*=" "/="
+                                     "&" "&=" "+" "-" "*"
+                                     "/" "^" "=" "=="
+                                     "<>" ">" ">=" "<" "<="
+                                     "?" ":")))
+           (goto-char (match-end 0))
+           (match-string-no-properties 0))
+          ((member (char-after) '(?' ?\"))
+           (au3-mode-next-string))
+          ((or (<= ?a (char-after) ?z)
+               (<= ?A (char-after) ?Z)
+               (member (char-after) '(?_ ?@ ?$)))
+           (forward-char)
+           (skip-chars-forward "a-zA-Z0-9_")
+           (let ((tok (buffer-substring-no-properties start (point))))
+             (au3-mode--normalize-keyword tok tok)))
+          (t (forward-char)
+             (buffer-substring-no-properties start (point))))))
+
+(defun au3-mode-simplest-forward-token (&optional internal-recurse)
+  (let ((orig-start (point)))
+    (au3-mode-skip-to-next-token)
+    (or (and (au3-mode--cache-valid-p)
+             ;; sets point as side effect:
+             (au3-mode--cache-get-token-from-beg (point)))
+        (progn
+          (if internal-recurse
+              ;; this function may back up to a known token starting point,
+              ;; then move forward only with au3-mode-skip-to-next-token and
+              ;; au3-mode--simplest-forward-token-internal, thus making sure
+              ;; we're never inside a token.
+              (let* ((start (point))
+                     (token (au3-mode--simplest-forward-token-internal))
+                     (stop (point)))
+                (when token
+                  (au3-mode--cache-insert-token token start stop)))
+            ;; check we're not called from the middle of a token
+            (unless (or (bobp)
+                        (eobp)
+                        (and (looking-back "[A-Za-z0-9]")
+                             (looking-at "[-+/*()=&?:<>^]"))
+                        (and (looking-back "[-+/*()=&?:<>^ \t]")
+                             (looking-at "[$@ A-Za-z0-9]")))
+              ;; we might be in the middle of a token (note that the check
+              ;; above isn't too clever so can believe it's in the middle of a
+              ;; token when it isn't and do extra work, but this is a risk we
+              ;; take).
+              (au3-mode--skip-backward-over-complete-newline-token))
+            (catch 'done
+              (while t
+                (let ((token (au3-mode-simplest-forward-token t)))
+                  (cond ((> (point) orig-start)
+                         (throw 'done token))
+                        ((eobp)
+                         (throw 'done nil)))))))))))
+
+(ert-deftest test-au3-mode-simplest-forward-token-caching ()
+  :tags '(rewind)
+  (let ((forward-fun 'au3-mode-simplest-forward-token))
+    (with-temp-buffer
+      (insert "Func abcd($efg, Const $_1234, _\n\t$z)\n")
+      (insert "  ; comment 1\n  ; comment 2\n#comments-start\n")
+      (insert "    long comment\n#comments-end\n\n")
+      (insert "  Return $efg - $h1234\n")
+      (insert "EndFunc")
+      (goto-char (point-min))
+      (should (null au3-mode--token-cache))
+      (dolist (exp-token
+               `("Func" "abcd" "(" "$efg" "," "Const" "$_1234" "," "$z" ")"
+                 ,au3-mode-+newline+
+                 "Return" "$efg" "-" "$h1234"
+                 ,au3-mode-+newline+
+                 "EndFunc"))
+        (let* ((token (funcall forward-fun))
+               (stop (point)))
+          (should-not (null au3-mode--token-cache))
+          (should (equal token exp-token))
+          (dotimes (x (if (equal token au3-mode-+newline+)
+                          1
+                        (length token)))
+            (should (equal (au3-mode--cache-get-token-from-beg
+                            (- stop x
+                               ;; subtract 1 more to cover point just in front
+                               ;; of token and all positions inside, but not
+                               ;; just after token
+                               1
+                               ))
+                           token))
+            (should (equal (point) stop))))))))
+
+
+(ert-deftest test-au3-mode-simplest-backward-token-caching ()
+  "`au3-mode-simplest-backward-token' impicitly caches tokens by
+using `au3-mode-simplest-forward-token'."
+  :tags '(rewind)
+  (let ((backward-fun 'au3-mode-simplest-backward-token))
+    (with-temp-buffer
+      (insert "Func abcd($efg, Const $_1234, _\n\t$z)\n")
+      (insert "  ; comment 1\n  ; comment 2\n#comments-start\n")
+      (insert "    long comment\n#comments-end\n\n")
+      (insert "  Return $efg - $h1234\n")
+      (insert "EndFunc")
+      (goto-char (point-min))
+      (should (null au3-mode--token-cache))
+      (should (equal (au3-mode-simplest-forward-token) "Func"))
+      (should (equal (point) 5))
+      (goto-char (point-max))
+      (dolist (exp-token
+               (reverse `("Func" "abcd" "(" "$efg" "," "Const" "$_1234" "," "$z" ")"
+                  ,au3-mode-+newline+
+                  "Return" "$efg" "-" "$h1234"
+                  ,au3-mode-+newline+
+                  "EndFunc"
+                  )))
+        (let* ((token (funcall backward-fun))
+               (stop (point)))
+          ;; (should-not (null au3-mode--token-cache))
+          (should (point))
+          (should (equal token exp-token))))
+      (should (equal (point) (point-min))))))
+
+(ert-deftest test-au3-mode-simplest-forward-token-from-middle ()
+  "Start `au3-mode-simplest-forward-token' from middle of token"
+  :tags '(token)
+  (let ((fun 'au3-mode-simplest-forward-token))
+    (should (equal (au3-mode--run-token-matcher fun "F|unc@") "Func"))
+    (should (equal (au3-mode--run-token-matcher fun "Fun|c@") "Func"))
+    (should (equal (au3-mode--run-token-matcher fun "If _
+a|bcd@ Then") "abcd"))
+    (should (equal (au3-mode--run-token-matcher fun "Func a() ; comment
+; comment
+\t| ; more comments
+#cs
+  Hello
+#ce
+@ EndFunc") au3-mode-+newline+))
+    (should (equal (au3-mode--run-token-matcher fun "2+|3E2@") au3-mode-+number+))
+    (should (equal (au3-mode--run-token-matcher fun "2+3|E2@") au3-mode-+number+))
+    (should (equal (au3-mode--run-token-matcher fun "If\n2+a|bc@ Then") "abc"))
+    (let ((post-val-fun
+           (lambda (start token stop)
+             (let ((entry (avl-tree-member (au3-mode--cache-beginning) start)))
+               (when entry
+                 ;; caching isn't mandatory, but if `token' was cached, check
+                 ;; that the data is correct
+                 (should (equal (au3-mode--cache-entry-token entry) token))
+                 (should (equal (au3-mode--cache-entry-beg entry) 2))
+                 (should (equal (au3-mode--cache-entry-end entry) 18))))
+             token)))
+     (should (equal (au3-mode--run-token-matcher fun "\t; c\n#c|s\n#ce\n\t; d@" nil nil post-val-fun)
+                    au3-mode-+newline+))
+     (should (equal (au3-mode--run-token-matcher fun "\t; c\n#cs\n#ce|\n\t; d@" nil nil post-val-fun)
+                    au3-mode-+newline+))
+     (should (equal (au3-mode--run-token-matcher fun "\t; c\n#cs\n#ce\n|\t; d@" nil nil post-val-fun)
+                    au3-mode-+newline+))
+     (should (equal (au3-mode--run-token-matcher fun "\t; c\n|#cs\n#ce\n\t; d@" nil nil post-val-fun)
+                    au3-mode-+newline+)))))
+
+(ert-deftest test-au3-mode-simplest-forward-token ()
+  :tags '(rewind)
+  (let ((forward-fun 'au3-mode-simplest-forward-token)
+        (backward-fun 'au3-mode-simplest-backward-token))
+    (dolist
+        (str_exp
+         `(("Func\nEndFunc" ("Func" ,au3-mode-+newline+ "EndFunc"))
+           ;; keywords are normalized
+           ("if $a thEN" ("If" "$a" "Then"))
+           ("\t; c\n\t; d\nWinWait(;\n; handle\n$h\t;t\n)"
+            (,au3-mode-+newline+ "WinWait" "("
+                                 ,au3-mode-+newline+ "$h"
+                                 ,au3-mode-+newline+ ")"))
+           ("Func _ \n\ta($x)\nReturn $x + 22\nEndFunc"
+            ("Func" "a" "(" "$x" ")" ";lf;"
+             "Return" "$x" "+" ,au3-mode-+number+ ";lf;"
+             "EndFunc"))))
+      (with-temp-buffer
+        (insert (car str_exp))
+        (goto-char (point-min))
+        (should (equal (au3-mode--collect-tokens forward-fun)
+                       (cadr str_exp)))
+        (should (equal (point) (point-max)))
+        (should (equal (reverse (au3-mode--collect-tokens backward-fun))
+                       (cadr str_exp)))
+        (should (equal (point) (point-min)))))))
+
+(defun au3-mode-simplest-backward-token ()
+  (skip-chars-backward " \t")
+  (if (bobp)
+      nil
+    (or (and (au3-mode--cache-valid-p)
+             (au3-mode--cache-get-token-from-end (point)))
+        ;; if we get here the cache didn't contain the token (or wasn't up to
+        ;; date)
+        (let* ((orig-start (point))
+               token-list)
+          (au3-mode--skip-backward-over-complete-newline-token)
+          (catch 'done
+            (while t
+              (let* ((start (point))
+                     (token (au3-mode-simplest-forward-token t))
+                     (stop (point)))
+                (if (null token)
+                    (progn
+                      (goto-char (point-min))
+                      (throw 'done nil))
+                  (push (au3-mode--cache-make-entry token start stop) token-list)
+                  (when (>= (point) orig-start)
+                    (dolist (entry token-list)
+                      (when (<= (au3-mode--cache-entry-end entry) orig-start)
+                        (throw 'done (au3-mode--cache-get-token-from-end
+                                      (au3-mode--cache-entry-end entry)))))
+                    ;; something went wrong: we moved past orig-start but
+                    ;; no token was found -> stop search and pretend we got
+                    ;; to beginning of buffer
+                                        ; (message "NOT REACHED")
+                    (goto-char (point-min))
+                    (throw 'done nil))))))))))
+
+(defun revert-autoit ()
+  (interactive)
+  (revert-buffer)
+  (dolist (x '("~/Desktop/autoit-mode/tdd-smie.el" "~/Desktop/autoit-mode/autoit-mode.el")) (load x))
+  (autoit-mode))
+
+(defun collect-all-tokens (fun)
+  (catch 'done
+    (let (result
+          (old (point-min)))
+      (goto-char old)
+      (while t
+        (push (funcall fun) result)
+        (if (eql (point) old)
+            (throw 'done
+                   (nreverse result))
+          (setq old (point)))))))
 
 (provide 'tdd-smie)

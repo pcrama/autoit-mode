@@ -6,8 +6,6 @@
 
 (defconst au3-mode-+identifier+ "identifier")
 
-(defconst au3-mode-+keyword+ "keyword")
-
 (defconst au3-mode-+newline+ ";lf;")
 
 (defconst au3-mode-+exp-inst-sep+ ";exp-inst-sep;")
@@ -24,12 +22,19 @@
 
 (defconst au3-mode-+number+ ";number;")
 
+(defconst au3-mode-+statement-start-keyword-list+
+  '("For" "Func" "If" "Return" "Select" "While" "With"))
+
+(defconst au3-mode-+statement-keyword-list+
+  (append '("Case" "Const" "ContinueLoop" "Dim" "Do" "Else"
+            "ElseIf" "EndFunc" "EndIf" "EndSelect" "Exit" "ExitLoop"
+            "Global" "Local" "Next" "ReDim" "Then" "Until" "WEnd"
+            "EndWith" "Switch" "EndSwitch")
+          au3-mode-+statement-start-keyword-list+))
+
 (defconst au3-mode-+keyword-list+
-  '("And" "ByRef" "Case" "Const" "ContinueLoop" "Dim" "Do" "Else"
-    "ElseIf" "EndFunc" "EndIf" "EndSelect" "Exit" "ExitLoop" "For"
-    "Func" "Global" "If" "In" "Local" "Next" "Not" "Or" "ReDim"
-    "Return" "Select" "Step" "Then" "To" "Until" "WEnd" "While"
-    "With" "EndWith" "Switch" "EndSwitch"))
+  (append '("And" "ByRef" "In" "Not" "Or" "Step" "To")
+          au3-mode-+statement-keyword-list+))
 
 (defconst au3-mode-+keyword-normalization+
   (let ((h (make-hash-table :test 'equal)))
@@ -63,26 +68,20 @@
           (forward-char)
           (skip-chars-forward " \t"))))))
 
-(defun au3-mode-next-regexp-token (regexp type)
+(defun au3-mode-next-regexp-token (regexp)
   (save-match-data
     (when (looking-at regexp)
       (goto-char (match-end 0))
-      (cons type (substring-no-properties (match-string 0))))))
-
-(defun au3-mode-next-operator ()
-  (au3-mode-next-regexp-token
-   "\\([&|^*/+=-]?=\\|[&|^*/+-]\\)"
-   au3-mode-+operator+))
+      (substring-no-properties (match-string 0)))))
 
 (defun au3-mode-next-keyword ()
   (let ((case-fold-search t))
-    (let ((token (au3-mode-next-regexp-token au3-mode-+keyword-regexp+
-                                             au3-mode-+keyword+)))
+    (let ((token (au3-mode-next-regexp-token au3-mode-+keyword-regexp+)))
       (when token
-        (let ((normalized (member-ignore-case (cdr token)
+        (let ((normalized (member-ignore-case token
                                               au3-mode-+keyword-list+)))
           (if normalized
-              (cons (car token) (car normalized))
+              (car normalized)
             (error "NOTREACHED: keyword list and keyword regexp out of sync")))))))
 
 (defconst au3-mode--+multi-line-comment-start-regexp+
@@ -182,12 +181,9 @@ Optional parameters:
   :tags '(token)
   (let ((case-fold-search nil)
         (fut 'au3-mode-next-keyword)) ; fut=function-under-test
-    (should (equal (au3-mode--run-token-matcher fut "|if@")
-                   (cons au3-mode-+keyword+ "If")))
-    (should (equal (au3-mode--run-token-matcher fut "|iF@")
-                   (cons au3-mode-+keyword+ "If")))
-    (should (equal (au3-mode--run-token-matcher fut "|IF@")
-                   (cons au3-mode-+keyword+ "If")))
+    (should (equal (au3-mode--run-token-matcher fut "|if@") "If"))
+    (should (equal (au3-mode--run-token-matcher fut "|iF@") "If"))
+    (should (equal (au3-mode--run-token-matcher fut "|IF@") "If"))
     ;; Exceptional cases: these aren't identifiers or cursor is in wrong place
     (should (equal (au3-mode--run-token-matcher fut "|@ For")
                    nil))
@@ -246,20 +242,6 @@ Optional parameters:
     (should (equal (au3-mode--run-token-matcher fut "$a = |@_\n2\n") nil))
     (should (equal (au3-mode--run-token-matcher fut "$a = 2 |; comment\n@$b=3")
                    exp-result))))
-
-(ert-deftest au3-mode-test-next-operator ()
-  "Test `au3-mode-next-operator'"
-  :tags '(token)
-  (let ((fut 'au3-mode-next-operator))
-    (should (equal (au3-mode--run-token-matcher fut "|+@")
-                   (cons au3-mode-+operator+ "+")))
-    (should (equal (au3-mode--run-token-matcher fut "$a|+=@-2")
-                   (cons au3-mode-+operator+ "+=")))
-    (should (equal (au3-mode--run-token-matcher fut "$a|=@+-2")
-                   (cons au3-mode-+operator+ "=")))
-    (should (equal (au3-mode--run-token-matcher fut "$a=|+@-2")
-                   (cons au3-mode-+operator+ "+")))
-    (should (not (au3-mode--run-token-matcher fut "|@$a=")))))
 
 (defun au3-mode--peek-token (skip movement)
   (let (next-token last-pos)
@@ -582,6 +564,7 @@ au3-mode-+newline+ token. "
                    (concat "|@" not-a-string-token))))))
 
 (require 'smie)
+
 (defvar sample-smie-grammar
   (smie-prec2->grammar
    (smie-bnf->prec2
@@ -589,9 +572,9 @@ au3-mode-+newline+ token. "
       (inst
        ;; ("If" exp "Then;lf;" inst-list "EndIf")
        ;; ("If" exp "Then;lf;" inst-list "Else;lf;" inst-list "EndIf")
-       ;; ("If" exp "Then" exp)
+       ("If" exp "Then" inst)
        ("While" inst ,au3-mode-+exp-inst-sep+ inst-list "WEnd")
-       ("If" exp "Then;lf;" inst-list "EndIf")
+       ("If" exp ,(concat "Then" au3-mode-+newline+) inst-list "EndIf")
        ("Func" exp ,au3-mode-+exp-inst-sep+ inst-list "EndFunc")
        )
       (inst-list (inst-list ,au3-mode-+newline+ inst-list) (inst))
@@ -612,20 +595,21 @@ au3-mode-+newline+ token. "
 
 (defun au3-mode--test-xxxward-sexp-jump (txt fun from to)
   (with-current-buffer (get-buffer-create "*yy*") ;with-temp-buffer
-    (delete-region (point-min) (point-max))
-    (insert txt)
-    (au3-mode--smie-setup)
-    (goto-char (point-min))
-    (search-forward from)
-    (when (eql fun 'smie-backward-sexp-command)
-      (goto-char (match-beginning 0)))
-    (call-interactively fun)
-    (when (eql fun 'smie-backward-sexp-command)
-      (if (string-suffix-p "\n" to)
-          (forward-line -1)
-        (goto-char (line-beginning-position)))
-      (skip-chars-forward " \t"))
-    (looking-at to)))
+    (let ((comment-use-syntax t))
+      (delete-region (point-min) (point-max))
+      (insert txt)
+      (au3-mode--smie-setup)
+      (goto-char (point-min))
+      (search-forward from)
+      (when (eql fun 'smie-backward-sexp-command)
+        (goto-char (match-beginning 0)))
+      (call-interactively fun)
+      (when (eql fun 'smie-backward-sexp-command)
+        (if (string-suffix-p "\n" to)
+            (forward-line -1)
+          (goto-char (line-beginning-position)))
+        (skip-chars-forward " \t"))
+      (looking-at to))))
 
 (ert-deftest test-au3-mode--jumps ()
   "When changing the tokens or the grammar it's hard to keep
@@ -644,29 +628,83 @@ WEnd;>1
     unique_func_name(1, 2, (3 - 4), 5 + 6 * 3);unique
   EndIf;>2
 WEnd;>3
+If $a < (2 + 4) Then MsgBox(1, 2, 3);>!3
 ;<4
 Func x($z)
+  ;<5
+  If _
+     dsfg(_
+       1 + _
+       2, g())_ ; some comment
+     Then _     ; comment again
+       h();>5
   While ($z > 123)
     Return 1
   WEnd
 EndFunc;>4"))
-    (dolist (from&to '((";<1\n" . ";>1")
-                       (";<2\n" . ";>2")
-                       (";<3\n" . ";>3")
-                       (";<4\n" . ";>4")
-                       ("unique_func_name" . ";unique")))
-      (let ((from (car from&to))
-            (to (cdr from&to)))
-        ;; (should (au3-mode--test-xxxward-sexp-jump
-        ;;          txt
-        ;;          'smie-backward-sexp-command
-        ;;          to
-        ;;          from))
+    (pcase-dolist (`(,from ,to . ,only)
+                   '((";<1\n" ";>1")
+                     (";<2\n" ";>2")
+                     (";<3\n" ";>3")
+                     (";>3\n" ";>!3" forward)
+                     (";<4\n" ";>4")
+                     (";<5\n" ";>5" forward)
+                     (";<5\n" "While ($z > 123)" backward)
+                     ("dsfg" "_ ; some comment")
+                     ("unique_func_name" ";unique")
+                     (";<5\n" "While ($z > 123)" backward)
+                     ))
+      (when (or (null only) (member 'backward only))
+        (should (au3-mode--test-xxxward-sexp-jump
+                 txt
+                 'smie-backward-sexp-command
+                 to
+                 from)))
+      (when (or (null only) (member 'forward only))
         (should (au3-mode--test-xxxward-sexp-jump
                  txt
                  'smie-forward-sexp-command
                  from
-                 to))))))
+                 to)))
+      )))
+
+;; -- From SMIE documentation ---------------------------------------------
+;; Another important concept is the notion of parent: The parent of a token,
+;; is the head token of the nearest enclosing syntactic construct. For
+;; example, the parent of an else is the if to which it belongs, and the
+;; parent of an if, in turn, is the lead token of the surrounding
+;; construct. The command backward-sexp jumps from a token to its parent, but
+;; there are some caveats: for openers (tokens which start a construct, like
+;; if), you need to start with point before the token, while for others you
+;; need to start with point after the token. backward-sexp stops with point
+;; before the parent token if that is the opener of the token of interest, and
+;; otherwise it stops with point after the parent token.
+;;
+;; SMIE indentation rules are specified using a function that takes two
+;; arguments method and arg where the meaning of arg and the expected return
+;; value depend on method.
+;;
+;; method can be:
+;; - :after, in which case arg is a token and the function should return the
+;;   offset to use for indentation after arg.
+;; - :before, in which case arg is a token and the function should return the
+;;   offset to use to indent arg itself.
+;; - :elem, in which case the function should return either the offset to use
+;;   to indent function arguments (if arg is the symbol arg) or the basic
+;;   indentation step (if arg is the symbol basic).
+;; - :list-intro, in which case arg is a token and the function should return
+;;   non-nil if the token is followed by a list of expressions (not separated
+;;   by any token) rather than an expression.
+;;
+;; When arg is a token, the function is called with point just before that
+;; token. A return value of nil always means to fallback on the default
+;; behavior, so the function should return nil for arguments it does not
+;; expect.
+;; offset can be:
+;; - nil: use the default indentation rule.
+;; - (column . column): indent to column column.
+;; - number: offset by number, relative to a base token which is the current
+;;   token for :after and its parent for :before.
 
 (defvar au3-mode-indent-basic 4)
 
@@ -674,17 +712,32 @@ EndFunc;>4"))
 
 (defvar au3-smie-rule-sibling-while-if nil)
 
-(defun au3-mode--smie-rule (kind token)
-  (ignore-errors (setq au3-smie-rule-sibling-while-if (smie-rule-sibling-p "While" "If")))
-  (ignore-errors (setq au3-smie-rule-parent-while-if (smie-rule-parent-p "While" "If")))
+(defun au3-mode--smie-hanging-p (token)
+  (and (not (smie-rule-bolp))
+       (save-excursion
+         (forward-char (length token))
+         (looking-at "[ \t]*_?\\(;.*\\)?$"))))
+
+(defun au3-mode--smie-rule-2 (kind token)
+  (ignore-errors (setq au3-smie-rule-sibling-while-if (smie-rule-sibling-p "While" "If" "Func")))
+  (ignore-errors (setq au3-smie-rule-parent-while-if (smie-rule-parent-p "While" "If" "Func")))
   (pcase (cons kind token)
     (`(:elem . basic) au3-mode-indent-basic)
     ;; indentation of function arguments: combination of no extra indentation
     ;; after `(' and indent function arguments
     (`(:elem . args) au3-mode-indent-basic)
-    (`(:after . "(") 0)
-    ;; (`(,:list-intro . ,(or "If"))
-    ;;  t)
+    (`(,_ . ,(pred (equal au3-mode-+newline+)))
+     (smie-rule-separator kind))
+    (`(:after . "(")
+     (if (smie-rule-parent-p "Func" "If" "While")
+         (smie-rule-parent au3-mode-indent-basic)
+       0))
+    (`(:after . ,(pred (equal au3-mode-+exp-inst-sep+)))
+     (smie-rule-parent au3-mode-indent-basic))
+    (`(:before . ,(or "EndFunc" "WEnd" "EndIf"))
+     (smie-rule-parent))
+    (`(,:list-intro . ,(or "Func"))
+     t)
     (`(:before . ,_)
      (let (parent)
        (cond ((or (equal token au3-mode-+newline+)
@@ -696,16 +749,43 @@ EndFunc;>4"))
              ;;  (smie-rule-parent au3-mode-indent-basic))
              )))))
 
+(defun au3-mode--smie-rule (kind token)
+  (ignore-errors (setq au3-smie-rule-sibling-while-if (smie-rule-sibling-p "While" "If" "Func")))
+  (ignore-errors (setq au3-smie-rule-parent-while-if (smie-rule-parent-p "While" "If" "Func")))
+  (cond ((and (eql kind :list-intro)
+              (or (and (null token) (bobp))
+                  (equal token au3-mode-+newline+)
+                  (equal token (concat "Then" au3-mode-+newline+))
+                  (equal token "If")))
+         t)
+        ((equal token au3-mode-+newline+)
+         (smie-rule-separator kind))))
+
 (defmacro au3-mode--should-indent (before after)
   `(let ((au3-mode-indent-basic 4)
          (comment-use-syntax t))
-     (with-current-buffer (get-buffer-create "*yy*")
+     (with-current-buffer (get-buffer-create "*zz*")
+       (setq indent-tabs-mode nil)
        (delete-region (point-min) (point-max))
        (au3-mode--smie-setup)
        (insert ,before)
        (indent-region (point-min) (point-max))
        (should (string-equal (buffer-substring (point-min) (point-max))
                              ,after)))))
+
+(ert-deftest test-au3-mode-indent-statement-list ()
+  "Test indentation of list of statements"
+  :tags '(indent)
+  (au3-mode--should-indent "f()\ngg()\nh()" "f()\ngg()\nh()")
+  (au3-mode--should-indent "fff()\n\t; g()\n\thh()\n; i()\nj()"
+                           "fff()\n; g()\nhh()\n; i()\nj()")
+  (au3-mode--should-indent "; comment\n\tf()\n\t; g()\n\th()"
+                           "; comment\nf()\n; g()\nh()")
+  (au3-mode--should-indent "If f() Then\nfff()\n; comment\ngg()\nEndIf"
+                           "If f() Then\n    fff()\n    ; comment\n    gg()\nEndIf")
+  (au3-mode--should-indent
+   "If f() Then\n; d\nfff()\n; comment\ngg()\n; e\nEndIf"
+   "If f() Then\n    ; d\n    fff()\n    ; comment\n    gg()\n    ; e\nEndIf"))
 
 (ert-deftest test-au3-mode-indent1 ()
   ""
@@ -750,7 +830,37 @@ Func efghijklmn($z, _
             abcd($a, $x)
         WEnd
     EndiF
-EndFunc"))
+EndFunc")
+  (au3-mode--should-indent "if $long_var_name > long_func_name(_ ; comment
+8, _
+9) Then test()
+if $a > long_func_name(_ ; comment
+8, _
+    9) Then _
+          test()
+          g()
+        if $a > long_func_name(_ ; comment
+8, _
+9) Then
+test()
+f()
+g()
+EndIf"
+                           "if $long_var_name > long_func_name(_ ; comment
+        8, _
+        9) Then test()
+if $a > long_func_name(_ ; comment
+        8, _
+        9) Then _
+    test()
+g()
+if $a > long_func_name(_ ; comment
+        8, _
+        9) Then
+    test()
+    f()
+    g()
+EndIf"))
 ;; (defun au3-mode--smie-rule (method arg)
 ;;   (pcase (cons method arg)
 ;;     (`(:before . "Func")
@@ -781,12 +891,33 @@ EndFunc"))
 ;;   )
 
 (defun au3-mode--smie-setup ()
-  (smie-setup sample-smie-grammar
-              'au3-mode--smie-rule
-              ;; :forward-token 'au3-mode--smie-forward-token
-              ;; :backward-token 'au3-mode--smie-backward-token
-              :forward-token 'au3-mode-simplest-forward-token
-              :backward-token 'au3-mode-simplest-backward-token))
+  (set-syntax-table autoit-mode-syntax-table)
+  (set (make-variable-buffer-local 'comment-use-syntax) t)
+  (smie-setup
+   sample-smie-grammar
+   'au3-mode--smie-rule
+   ;; :forward-token 'au3-mode--smie-forward-token
+   ;; :backward-token 'au3-mode--smie-backward-token
+   :forward-token 'au3-mode-simplest-forward-token
+   :backward-token 'au3-mode-simplest-backward-token)
+  ;; (smie-setup sample-smie-grammar
+  ;;             'au3-mode--smie-rule
+  ;;             ;; :forward-token 'au3-mode--smie-forward-token
+  ;;             ;; :backward-token 'au3-mode--smie-backward-token
+  ;;             :forward-token 'au3-mode-simplest-forward-token
+  ;;             :backward-token 'au3-mode-simplest-backward-token)
+  )
+
+(defvar au3-mode--restrict-recursion nil
+  "Flag bound to t by some internals: trade recursion depth for less precise answers
+
+Functions like `au3-mode--peek-bol-keyword' call upon higher
+level functions which in turn could call
+`au3-mode--peek-bol-keyword' again.  This can cause the recursion
+to exceed the Lisp stack depth.  When this flag is temporarily
+bound to a true value, less precise answers may be given (but not
+stored in the cache) because no further recursion will take
+place.")
 
 (defun au3-mode--peek-bol-keyword (start)
   "Return keyword at (logical) beginning of line
@@ -796,13 +927,77 @@ relies on differentiating `au3-mode-+newline+' and
 `au3-mode-+exp-inst-sep+' by going back to the beginning of the
 statement, but the current implementation only goes back to BOL,
 doesn't skip back over line continuation characters."
-  (save-excursion
-    (goto-char start)
-    (goto-char (line-beginning-position))
-    (skip-chars-forward " \t")
-    (let ((from (point)))
-      (skip-chars-forward "A-Za-z")
-      (buffer-substring-no-properties from (point)))))
+  (if au3-mode--restrict-recursion
+      au3-mode-+newline+
+    (save-excursion
+      (goto-char start)
+      (catch 'done
+        (while t
+          (let* ((lbp (line-beginning-position))
+                 bobp)
+            (goto-char lbp)
+            (setq bobp (bobp))
+            (skip-chars-forward " \t")
+            (let* ((from (point))
+                   (keyword-token (au3-mode-next-keyword))
+                   (token (lambda ()
+                            (or keyword-token
+                                (progn
+                                  (goto-char from)
+                                  (skip-chars-forward "^; \t\n")
+                                  (buffer-substring-no-properties from (point)))))))
+              (if (or bobp
+                      (member keyword-token au3-mode-+statement-start-keyword-list+))
+                  (throw 'done (funcall token))
+                (goto-char lbp)
+                (let* ((au3-mode--restrict-recursion t)
+                       (back-token (au3-mode-simplest-backward-token t)))
+                  (unless (or bobp (< (point) lbp))
+                    (error "This can't happen: back-token=%s lbp=%d point=%d" back-token lbp (point)))
+                  (when (or (member back-token (list au3-mode-+newline+
+                                                     au3-mode-+exp-inst-sep+))
+                            ;; inlined string/ends-with from emacswiki
+                            (string-match (rx-to-string `(: ,au3-mode-+newline+ eos) t)
+                                          back-token))
+                    (throw 'done (funcall token))))))))))))
+
+(ert-deftest test-au3-mode--peek-bol-keyword ()
+  "Test `au3-mode--peek-bol-keyword'"
+  :tags '(token)
+  (pcase-dolist (`(,str ,exp-token)
+                 '(;; trivial cases
+                   ("Local $a=1\nIf $a Then|\nf()\nEndIf" "If")
+                   ("If $a Then|\nf()\nEndIf" "If") ; at beginning of buffer
+                   ;; ... beginning of buffer.  When not one of the keywords,
+                   ;;     exact token is not realy important
+                   ("f()|\ng()\n" "f()")
+                   ;; Normalizing case
+                   ("while $a|\nf()\nWEnd" "While")
+                   ;; Harder cases (spread over several lines)
+                   ("Local $a = _\n1\nIf (_\n$a > _\n$b)_\nThen _\nf()|\ng()\n" "If")
+                   ;; ... contain a Then;lf; token.  Return value is an
+                   ;;     example of malformed token returned by
+                   ;;     `au3-mode--peek-bol-keyword', but it doesn't matter
+                   ;;     as long as it can't be mistaken with a keyword
+                   ("If $a = _\n1 _\nThen\nf((_\n$a > _\n$b)_\n, _\nf() _|\ng())\n" "f((_")
+                   ("While $a = _\n1 _\n+ \"Then\"\nf((_\n$a > _\n$b)_\n, _\nf() _|\ng())\n" "f((_")
+                   ;; initial use cases for `au3-mode--peek-bol-keyword'
+                   ("fgh()\nIf $a = 1 Then\nFor $b = _\n1 _\n\tto\t_\n\t3 _\nStep 4|\n\t\tf()\nNext"
+                    "For")
+                   ("fgh()\nIf $a = 1 Then|\nFor $b = _\n1 _\n\tto\t_\n\t3 _\nStep 4\t\tf()\nNext"
+                    "If")
+                   ("If $a _\n = 2 _\nThen _\nIf $b _\n=_\n3 _\nThen _|\nf()" "If")
+                   ("f()\nWhile f(_\n)=_\ng(_\n)|\nIf $a Then\nh()\nEndIf" "While")
+                   ("f()\nWhile f(_\n)=_\ng(_\n)\nIf $a Then|\nh()\nEndIf" "If")
+                   ("If f() Then g()\n\tfunc a(_\n$b,_\n) ; func def|\n\th()\nEndFunc" "Func")
+                   ))
+    (with-temp-buffer
+      (insert str)
+      (goto-char (point-min))
+      (search-forward "|")
+      (delete-char -1 nil)
+      (should (equal exp-token
+                     (au3-mode--peek-bol-keyword (point)))))))
 
 (defun au3-mode--simplest-forward-token-internal ()
   "Advance point and return token after point
@@ -820,11 +1015,12 @@ Assumes it is called at a token boundary."
                                 'au3-mode--simplest-forward-token-internal)))
                  (if (not (member (car next&pos) '(;"EndIf"
                                                    "EndFor"
-                                                   ;"WEnd"
-                                                   ;"EndFunc"
+                                        ;"WEnd"
+                                        ;"EndFunc"
                                                    "EndSelect")))
-                     (if (member (au3-mode--peek-bol-keyword start)
-                                 '("Func" "While"))
+                     (if (and (not au3-mode--restrict-recursion)
+                              (member (au3-mode--peek-bol-keyword start)
+                                      '("While" "Func")))
                          au3-mode-+exp-inst-sep+
                        tok)
                    (goto-char (cdr next&pos))
@@ -873,7 +1069,8 @@ Assumes it is called at a token boundary."
                      (token (au3-mode--simplest-forward-token-internal))
                      (stop (point)))
                 (when (and token (not no-caching))
-                  (au3-mode--cache-insert-token token start stop)))
+                  (au3-mode--cache-insert-token token start stop))
+                token)
             ;; check we're not called from the middle of a token
             (unless (or (bobp)
                         (eobp)
@@ -907,7 +1104,7 @@ Assumes it is called at a token boundary."
       (should (null au3-mode--token-cache))
       (dolist (exp-token
                `("Func" "abcd" "(" "$efg" "," "Const" "$_1234" "," "$z" ")"
-                 ,au3-mode-+newline+
+                 ,au3-mode-+exp-inst-sep+
                  "Return" "$efg" "-" "$h1234"
                  ,au3-mode-+newline+
                  "EndFunc"))
@@ -947,7 +1144,7 @@ using `au3-mode-simplest-forward-token'."
       (goto-char (point-max))
       (dolist (exp-token
                (reverse `("Func" "abcd" "(" "$efg" "," "Const" "$_1234" "," "$z" ")"
-                  ,au3-mode-+newline+
+                  ,au3-mode-+exp-inst-sep+
                   "Return" "$efg" "-" "$h1234"
                   ,au3-mode-+newline+
                   "EndFunc"
@@ -973,7 +1170,7 @@ a|bcd@ Then") "abcd"))
 #cs
   Hello
 #ce
-@ EndFunc") au3-mode-+newline+))
+@ EndFunc") au3-mode-+exp-inst-sep+))
     (should (equal (au3-mode--run-token-matcher fun "2+|3E2@") au3-mode-+number+))
     (should (equal (au3-mode--run-token-matcher fun "2+3|E2@") au3-mode-+number+))
     (should (equal (au3-mode--run-token-matcher fun "If\n2+a|bc@ Then") "abc"))
@@ -1002,7 +1199,7 @@ a|bcd@ Then") "abcd"))
         (backward-fun 'au3-mode-simplest-backward-token))
     (dolist
         (str_exp
-         `(("Func\nEndFunc" ("Func" ,au3-mode-+newline+ "EndFunc"))
+         `(("Func\nEndFunc" ("Func" ,au3-mode-+exp-inst-sep+ "EndFunc"))
            ;; keywords are normalized
            ("if $a thEN" ("If" "$a" "Then"))
            ("\t; c\n\t; d\nWinWait(;\n; handle\n$h\t;t\n)"
@@ -1010,7 +1207,7 @@ a|bcd@ Then") "abcd"))
                                  ,au3-mode-+newline+ "$h"
                                  ,au3-mode-+newline+ ")"))
            ("Func _ \n\ta($x)\nReturn $x + 22\nEndFunc"
-            ("Func" "a" "(" "$x" ")" ,au3-mode-+newline+
+            ("Func" "a" "(" "$x" ")" ,au3-mode-+exp-inst-sep+
              "Return" "$x" "+" ,au3-mode-+number+ ,au3-mode-+newline+
              "EndFunc"))
            ("While $a\nf()\nWEnd"
@@ -1038,30 +1235,31 @@ precedence grammar (see SMIE documentation)."
     ;; each other in the grammar)
     (should (equal (au3-mode--run-token-matcher fun "If $a| then@ $b\n$c")
                    "Then"))
-    (should (equal (au3-mode--run-token-matcher fun "If $a| then\n@ $b\nEndIf")
-                   (concat "Then" au3-mode-+newline+)))
-    ;; ... from the middle of the token
-    (should (equal (au3-mode--run-token-matcher fun "If $a then|\n@ $b\nEndIf")
-                   (concat "Then" au3-mode-+newline+)))
-    (should (equal (au3-mode--run-token-matcher fun "If $a th|en ;c\n\t#cs\n#ce\n;d\n@ $b\nEndIf")
-                   (concat "Then" au3-mode-+newline+)))
-    (should (equal (au3-mode--run-token-matcher fun "If $a _\n then ;|c\n\t#cs\n#ce\n;d\n@ $b\nEndIf")
-                   (concat "Then" au3-mode-+newline+)))
-    ;; The EndXXX type tokens shouldn't contain the preceding
-    ;; au3-mode-+newline+ token
-    (should (equal (au3-mode--run-token-matcher fun "If $a then\n$b|\n@EndIf")
-                   au3-mode-+newline+))
-    ;; ... from the middle of the token
-    (should (equal (au3-mode--run-token-matcher fun "Func a()\n$b;c|d\n@EndFunc")
-                   au3-mode-+newline+))
-    (should (equal (au3-mode--run-token-matcher fun "While $a\n$b;cd\nW|End@")
-                   "WEnd"))
-    (should (equal (au3-mode--run-token-matcher fun "While $a|\n@$b;cd\nWEnd")
-                   au3-mode-+exp-inst-sep+))
-    (should (equal (au3-mode--run-token-matcher fun "Func x($a)|\n@Return $d\nEndFunc")
-                   au3-mode-+exp-inst-sep+))
+    ;; (should (equal (au3-mode--run-token-matcher fun "If $a| then\n@ $b\nEndIf")
+    ;;                (concat "Then" au3-mode-+newline+)))
+    ;; ;; ... from the middle of the token
+    ;; (should (equal (au3-mode--run-token-matcher fun "If $a then|\n@ $b\nEndIf")
+    ;;                (concat "Then" au3-mode-+newline+)))
+    ;; (should (equal (au3-mode--run-token-matcher fun "If $a th|en ;c\n\t#cs\n#ce\n;d\n@ $b\nEndIf")
+    ;;                (concat "Then" au3-mode-+newline+)))
+    ;; (should (equal (au3-mode--run-token-matcher fun "If $a _\n then ;|c\n\t#cs\n#ce\n;d\n@ $b\nEndIf")
+    ;;                (concat "Then" au3-mode-+newline+)))
+    ;; ;; The EndXXX type tokens shouldn't contain the preceding
+    ;; ;; au3-mode-+newline+ token
+    ;; (should (equal (au3-mode--run-token-matcher fun "If $a then\n$b|\n@EndIf")
+    ;;                au3-mode-+newline+))
+    ;; ;; ... from the middle of the token
+    ;; (should (equal (au3-mode--run-token-matcher fun "Func a()\n$b;c|d\n@EndFunc")
+    ;;                au3-mode-+newline+))
+    ;; (should (equal (au3-mode--run-token-matcher fun "While $a\n$b;cd\nW|End@")
+    ;;                "WEnd"))
+    ;; (should (equal (au3-mode--run-token-matcher fun "While $a|\n@$b;cd\nWEnd")
+    ;;                au3-mode-+exp-inst-sep+))
+    ;; (should (equal (au3-mode--run-token-matcher fun "Func x($a)|\n@Return $d\nEndFunc")
+    ;;                au3-mode-+exp-inst-sep+))
+    ;; (should (equal (au3-mode--run-token-matcher fun "func _\nxyz(_\n$a,_\n$if _)|\n@Return $d\nEndFunc")
+    ;;                au3-mode-+exp-inst-sep+))
     ))
-
 
 (defun au3-mode-simplest-backward-token (&optional no-caching)
   (skip-chars-backward " \t")
@@ -1087,14 +1285,30 @@ precedence grammar (see SMIE documentation)."
                   (when (>= (point) orig-start)
                     (dolist (entry token-list)
                       (when (<= (au3-mode--cache-entry-end entry) orig-start)
-                        (throw 'done (au3-mode--cache-get-token-from-end
-                                      (au3-mode--cache-entry-end entry)))))
+                        ;; Pity I can't use
+                        ;; (au3-mode--cache-get-token-from-end
+                        ;; (au3-mode--cache-entry-end entry)) here as it would
+                        ;; set the point correctly.  Unfortunately when
+                        ;; no-caching is t, the newly found entry may very
+                        ;; well not be in the cache and NIL gets returned and
+                        ;; the point isn't updated either.
+                        (goto-char (au3-mode--cache-entry-beg entry))
+                        (throw 'done (au3-mode--cache-entry-token entry))))
                     ;; something went wrong: we moved past orig-start but
                     ;; no token was found -> stop search and pretend we got
                     ;; to beginning of buffer
                                         ; (message "NOT REACHED")
                     (goto-char (point-min))
                     (throw 'done nil))))))))))
+
+(ert-deftest test-au3-mode-simplest-backward-token-no-caching ()
+  "Test `au3-mode-simplest-backward-token' with no-caching=t"
+  :tags '(token)
+  (let ((fun (lambda () (au3-mode-simplest-backward-token t))))
+    (should (equal (au3-mode--run-token-matcher fun "f(_,\n@$a|)") "$a"))
+    (should (equal (au3-mode--run-token-matcher fun "|@f(_,\n@$a|)") nil))
+    (should (equal (au3-mode--run-token-matcher fun "@\n\n\n\t|f(_,\n@$a|)")
+                   au3-mode-+newline+))))
 
 (defun revert-autoit ()
   (interactive)
@@ -1118,18 +1332,24 @@ precedence grammar (see SMIE documentation)."
   (let ((buffer-to-indent (get-buffer-create "*to-indent*"))
         (buffer-to-log (get-buffer-create "*log*"))
         (au3-mode-indent-basic 4)
-        (smie--hanging-eolp-function
-         (lambda ()
-           (skip-chars-forward " \t")
-           (or (eolp)
-               (when (looking-at "_")
-                 (forward-char 1)
-                 (skip-chars-forward "^\n;")
-                 (when (looking-at ";")
-                   (skip-chars-forward "^\n"))
-                 t)
-               (and ;; (looking-at comment-start-skip) ;(bug#16041).
-                (forward-comment (point-max)))))))
+        (comment-use-syntax t)
+        ;; (smie--hanging-eolp-function
+        ;;  (lambda ()
+        ;;    (let ((point (point)))
+        ;;      (with-current-buffer buffer-to-log
+        ;;        (goto-char (point-max))
+        ;;        (insert "* hanging-eol-comment\npoint=%d" point))
+        ;;      (skip-chars-forward " \t")
+        ;;      (or (eolp)
+        ;;          (when (looking-at "_")
+        ;;            (forward-char 1)
+        ;;            (skip-chars-forward "^\n;")
+        ;;            (when (looking-at ";")
+        ;;              (skip-chars-forward "^\n"))
+        ;;            t)
+        ;;          (and ;; (looking-at comment-start-skip) ;(bug#16041).
+        ;;           (forward-comment (point-max)))))))
+        )
     (with-current-buffer buffer-to-log
       (delete-region (point-min) (point-max))
       (org-mode))
@@ -1144,20 +1364,21 @@ precedence grammar (see SMIE documentation)."
                (bef (buffer-substring-no-properties (point-min) (point-max)))
                (result (au3-mode--smie-rule method arg))
                (back-token (save-excursion (au3-mode-simplest-backward-token))))
-           (with-current-buffer buffer-to-log
-             (goto-char (point-max))
-             (insert
-              (format
-               "* %s %s\nPoint=%d, back-token=%s, {parent,sibling}-p While/If=%s,%s\n#+BEGIN_EXAMPLE\n%s|%s\n#+END_EXAMPLE\nResult(%s %s %d)=%s\n"
-               method
-               arg
-               p
-               back-token
-               au3-smie-rule-parent-while-if
-               au3-smie-rule-sibling-while-if
-               (substring bef 0 (1- p))
-               (substring bef (1- p))
-               method arg p result)))
+           (ignore-errors
+             (with-current-buffer buffer-to-log
+               (goto-char (point-max))
+               (insert
+                (format
+                 "* %s %s\nPoint=%d, back-token=%s, {parent,sibling}-p While/If=%s,%s\n#+BEGIN_EXAMPLE\n%s|%s\n#+END_EXAMPLE\nResult(%s %s %d)=%s\n"
+                 method
+                 arg
+                 p
+                 back-token
+                 au3-smie-rule-parent-while-if
+                 au3-smie-rule-sibling-while-if
+                 (substring bef 0 (1- p))
+                 (substring bef (1- p))
+                 method arg p result))))
            result))
        ;; :forward-token 'au3-mode--smie-forward-token
        ;; :backward-token 'au3-mode--smie-backward-token

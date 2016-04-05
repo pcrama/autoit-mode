@@ -221,19 +221,19 @@ Optional parameters:
                    exp-result))
     (should (equal (au3-mode--run-token-matcher fut "Local $a = 2|\n@Local $b=3")
                    exp-result))
-    (should (equal (au3-mode--run-token-matcher fut "Local $a = 2|\n\n@\tLocal $b=3")
+    (should (equal (au3-mode--run-token-matcher fut "Local $a = 2|\n@\n\tLocal $b=3")
                    exp-result))
     (should (equal (au3-mode--run-token-matcher fut "$a = 2|\n@  Local $b=3")
                    exp-result))
-    (should (equal (au3-mode--run-token-matcher fut "$a = 2|\n  #cs\n\t#ce\n@$b=3")
+    (should (equal (au3-mode--run-token-matcher fut "$a = 2\n | #cs\n\t#ce\n@$b=3")
                    exp-result))
     (should (equal (au3-mode--run-token-matcher
                     fut
-                    "|#cs\n11\n\t#ce\n  ;#cs\n@ \t $b=3")
+                    "|#cs\n11\n\t#ce\n@  ;#cs\n \t $b=3")
                    exp-result))
     (should (equal (au3-mode--run-token-matcher
                     fut
-                    "$a = 2|\n  #cs\n11\n\t#ce\n  ;#cs\n@ \t $b=3")
+                    "$a = 2\n  #cs\n11\n\t#ce\n  ;#|cs\n@ \t $b=3")
                    exp-result))
     (should (equal (au3-mode--run-token-matcher fut "$a = 2|\n  ; c1\n\t; c2\n;c3\n@\t\t$b=3\n")
                    exp-result))
@@ -1036,14 +1036,13 @@ Assumes it is called at a token boundary."
         (after (char-after)))
     (cond ((eobp) nil)
           ((or (eolp) (eql after au3-mode-+comment+))
-           (let ((tok (au3-mode-next-newline)))
-             (if (not (equal tok au3-mode-+newline+))
-                 tok
-               (if (and (not au3-mode--restrict-recursion)
-                        (member (au3-mode--peek-bol-keyword start)
-                                '("While" "Func")))
-                   au3-mode-+exp-inst-sep+
-                 tok))))
+           (skip-chars-forward "^\n")
+           (forward-char)
+           (if (and (not au3-mode--restrict-recursion)
+                    (member (au3-mode--peek-bol-keyword start)
+                            '("While" "Func")))
+               au3-mode-+exp-inst-sep+
+             au3-mode-+newline+))
           ((looking-at au3-mode-+number-regexp+)
            (goto-char (match-end 0))
            au3-mode-+number+)

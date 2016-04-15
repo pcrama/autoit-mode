@@ -95,34 +95,24 @@
    "Flag: 1st call of `au3-mode-next-newline' at end of buffer returns
 `au3-mode-+newline+', second return nil."))
 
-(defun au3-mode-next-newline (&optional recursed)
-  (let ((return-result (lambda ()
-                         (if (eobp)
-                             (setq au3-mode--next-newline-already-eobp t)
-                           (skip-chars-backward "\t "))
-                         au3-mode-+newline+)))
-    (cond ((and recursed (eobp))
-           (funcall return-result))
-          ((looking-at-p "\n")
-           (skip-chars-forward "\n\t\r\l ")
-           ;; recurse to handle skipping comments
-           (au3-mode-next-newline t))
-          ((looking-at-p au3-mode--+multi-line-comment-start-regexp+)
-           ;; TODO: handle nested comments
-           (search-forward-regexp au3-mode--+multi-line-comment-end-regexp+
-                                  (point-max)
-                                  'noerror)
-           ;; recurse to handle skipping several comments
-           (au3-mode-next-newline t))
-          ((equal (char-after) au3-mode-+comment+)
-           (skip-chars-forward "^\n")
-           ;; recurse to handle skipping several comments
-           (au3-mode-next-newline t))
-          ((and (not au3-mode--next-newline-already-eobp)
-                (eobp))
-           (funcall return-result))
-          (recursed
-           (funcall return-result)))))
+(defun au3-mode-next-newline ()
+  (let ((start (point)))
+    (cond ((or (eolp) (eql (char-after) au3-mode-+comment+))
+           (skip-chars-forward "^\n"))
+          ((save-excursion
+             (goto-char (line-beginning-position))
+             (looking-at au3-mode--+multi-line-comment-start-regexp+))
+           (goto-char (match-end 0))
+           (search-forward-regexp au3-mode--+multi-line-comment-end-regexp+)
+           (goto-char (match-end 0))
+           (skip-chars-forward " \t")))
+    (when (eql (char-after) ?\n)
+      (forward-char)
+      (if (and (not au3-mode--restrict-recursion)
+               (member (au3-mode--peek-bol-keyword start)
+                       '("While" "Func")))
+          au3-mode-+exp-inst-sep+
+        au3-mode-+newline+))))
 
 (defun au3-mode--run-token-matcher (matcher str &optional start stop post-validation)
   "Test MATCHER on STR.
@@ -215,9 +205,8 @@ Optional parameters:
   :tags '(token)
   (let ((fut 'au3-mode-next-newline)
         (exp-result au3-mode-+newline+))
-    (should (equal (au3-mode--run-token-matcher fut "|@")
-                   exp-result))
-    (should (equal (au3-mode--run-token-matcher fut "|\n   @")
+    (should-not (au3-mode--run-token-matcher fut "|@"))
+    (should (equal (au3-mode--run-token-matcher fut "|\n@   ")
                    exp-result))
     (should (equal (au3-mode--run-token-matcher fut "Local $a = 2|\n@Local $b=3")
                    exp-result))
@@ -229,16 +218,16 @@ Optional parameters:
                    exp-result))
     (should (equal (au3-mode--run-token-matcher
                     fut
-                    "|#cs\n11\n\t#ce\n@  ;#cs\n \t $b=3")
+                    "|#cs\n11\n\t#ce\n@\n  ;#cs\n \t $b=3")
                    exp-result))
     (should (equal (au3-mode--run-token-matcher
                     fut
-                    "$a = 2\n  #cs\n11\n\t#ce\n  ;#|cs\n@ \t $b=3")
+                    "$a = 2\n  #cs\n11\n\t#ce\n  |;#cs\n@ \t $b=3")
                    exp-result))
-    (should (equal (au3-mode--run-token-matcher fut "$a = 2|\n  ; c1\n\t; c2\n;c3\n@\t\t$b=3\n")
+    (should (equal (au3-mode--run-token-matcher fut "$a = 2|\n@  ; c1\n\t; c2\n;c3\n\t\t$b=3\n")
                    exp-result))
-    (should (equal (au3-mode--run-token-matcher fut "$a = |@2\n") nil))
-    (should (equal (au3-mode--run-token-matcher fut "$a = |@_\n2\n") nil))
+    (should-not (au3-mode--run-token-matcher fut "$a = |@2\n"))
+    (should-not (au3-mode--run-token-matcher fut "$a = |@_\n2\n"))
     (should (equal (au3-mode--run-token-matcher fut "$a = 2 |; comment\n@$b=3")
                    exp-result))))
 
@@ -403,7 +392,8 @@ This function has two uses:
 
 (defun au3-mode--skip-backward-over-complete-newline-token ()
   "Moves point back to beginning of line that isn't inside a
-au3-mode-+newline+ token. "
+au3-mode-+newline+ token. Assumes it is called from outside a
+multi-line comment."
   (let ((lbp (line-beginning-position)))
     (if (= (point) lbp)
         (forward-line -1)
@@ -566,17 +556,18 @@ au3-mode-+newline+ token. "
    (smie-bnf->prec2
     `((id)
       (inst
-       (exps)
+       ("Local" id "=" exp)
+       (id "=" exp)
+       (exp)
        ;; ("If" exp "Then" inst-list "EndIf")
        ;; ("If" exp "Then" inst-list "Else;lf;" inst-list "EndIf")
-       ("If" exp "Then;1;" inst)
+       ("If;1;" exp "Then;1;" inst)
        ("While" inst ,au3-mode-+exp-inst-sep+ inst-list "WEnd")
        ("If" exp "Then" inst-list "EndIf")
        ("Func" exp ,au3-mode-+exp-inst-sep+ inst-list "EndFunc")
        )
       (inst-list (inst-list ,au3-mode-+newline+ inst-list) (inst))
-      (exp (id)
-           (exp "+" exp)
+      (exp (exp "+" exp)
            (exp "-" exp)
            (exp "*" exp)
            (exp "/" exp)
@@ -585,8 +576,8 @@ au3-mode-+newline+ token. "
            )
       (exps (exps "," exps) (exp))
       )
-    `((assoc ,au3-mode-+exp-inst-sep+)
-      (assoc ,au3-mode-+newline+)
+    `((assoc ,au3-mode-+newline+ ,au3-mode-+exp-inst-sep+)
+      (nonassoc "If;1;" "Then;1;" "Then")
       (assoc ",")
       (assoc "=")
       (assoc "<" ">" "==")
@@ -739,13 +730,13 @@ EndFunc;>4"))
               0
             ;; Double comment marker `;;' get indented like surrounding code ->
             ;; let another SMIE function handle it
-            (smie-indent-comment))
+            nil)
         ;; single comment marker `;'
         (comment-choose-indent))))))
 
 (defun au3-mode--smie-rule (kind token)
-  (ignore-errors (setq au3-smie-rule-sibling-while-if (smie-rule-sibling-p "While" "If" "Func" "Then")))
-  (ignore-errors (setq au3-smie-rule-parent-while-if (smie-rule-parent-p "While" "If" "Func" "Then")))
+  (ignore-errors (setq au3-smie-rule-sibling-while-if (smie-rule-sibling-p)))
+  (ignore-errors (setq au3-smie-rule-parent-while-if (smie-rule-parent-p "While" "If" "Func" "Then" au3-mode-+newline+ au3-mode-+exp-inst-sep+)))
   (cond ((and (eql kind :elem)
               (or (eql token 'basic)
                   (eql token 'args)))
@@ -758,7 +749,9 @@ EndFunc;>4"))
               (equal token au3-mode-+newline+))
          (if (smie-rule-parent-p "While" "If" "Func" "Then")
              (smie-rule-parent au3-mode-indent-basic)
-           (smie-rule-separator kind)))
+           (if (smie-rule-parent-p au3-mode-+newline+)
+               (smie-rule-parent)
+             (smie-rule-separator kind))))
         ((and (eql kind :after)
               (equal token "Then"))
          nil ;au3-mode-indent-basic
@@ -923,6 +916,7 @@ EndIf"))
 (defun au3-mode--smie-setup (&optional rule)
   (set-syntax-table autoit-mode-syntax-table)
   (set (make-variable-buffer-local 'comment-use-syntax) t)
+  (set (make-variable-buffer-local 'smie-rule-separator-outdent) nil)
   (smie-setup
    sample-smie-grammar
    (or rule 'au3-mode--smie-rule)
@@ -936,7 +930,10 @@ EndIf"))
   ;;             ;; :backward-token 'au3-mode--smie-backward-token
   ;;             :forward-token 'au3-mode-simplest-forward-token
   ;;             :backward-token 'au3-mode-simplest-backward-token)
-  (add-hook 'smie-indent-functions 'au3-mode-indent-comment nil t)
+  (add-hook (make-variable-buffer-local 'smie-indent-functions)
+            'au3-mode-indent-comment
+            nil
+            t)
   )
 
 (defvar au3-mode--restrict-recursion nil
@@ -1035,14 +1032,7 @@ Assumes it is called at a token boundary."
   (let ((start (point))
         (after (char-after)))
     (cond ((eobp) nil)
-          ((or (eolp) (eql after au3-mode-+comment+))
-           (skip-chars-forward "^\n")
-           (forward-char)
-           (if (and (not au3-mode--restrict-recursion)
-                    (member (au3-mode--peek-bol-keyword start)
-                            '("While" "Func")))
-               au3-mode-+exp-inst-sep+
-             au3-mode-+newline+))
+          ((au3-mode-next-newline))
           ((looking-at au3-mode-+number-regexp+)
            (goto-char (match-end 0))
            au3-mode-+number+)
@@ -1058,7 +1048,14 @@ Assumes it is called at a token boundary."
            (skip-chars-forward "a-zA-Z0-9_")
            (let* ((tok (buffer-substring-no-properties start (point)))
                   (norm-tok (au3-mode--normalize-keyword tok)))
-             (cond ((equal norm-tok "Then")
+             (cond ((equal norm-tok "If")
+                    (let ((next&pos (au3-mode--peek-token
+                                     'au3-mode-skip-to-next-token
+                                     'au3-mode--simplest-forward-token-internal)))
+                      (if (and next&pos (equal (car next&pos) "("))
+                          (concat norm-tok ";1;")
+                        norm-tok)))
+                   ((equal norm-tok "Then")
                     (let ((next&pos (au3-mode--peek-token
                                      'au3-mode-skip-to-next-token
                                      'au3-mode--simplest-forward-token-internal)))
@@ -1089,18 +1086,10 @@ Assumes it is called at a token boundary."
                 (when (and token (not no-caching))
                   (au3-mode--cache-insert-token token start stop))
                 token)
-            ;; check we're not called from the middle of a token
-            (unless (or (bobp)
-                        (eobp)
-                        (and (looking-back "[A-Za-z0-9]")
-                             (looking-at "[-+/*()=&?:<>^]"))
-                        (and (looking-back "[-+/*()=&?:<>^ \t]")
-                             (looking-at "[$@ A-Za-z0-9]")))
-              ;; we might be in the middle of a token (note that the check
-              ;; above isn't too clever so can believe it's in the middle of a
-              ;; token when it isn't and do extra work, but this is a risk we
-              ;; take).
-              (au3-mode--skip-backward-over-complete-newline-token))
+            ;; Always assume we're called from the middle of a token: if point
+            ;; is in comment, we must get out first.  Doing some extra parsing
+            ;; isn't too bad, since we cache results.
+            (au3-mode--skip-backward-over-complete-newline-token)
             (catch 'done
               (while t
                 (let ((token (au3-mode-simplest-forward-token t no-caching)))
@@ -1123,6 +1112,10 @@ Assumes it is called at a token boundary."
       (dolist (exp-token
                `("Func" "abcd" "(" "$efg" "," "Const" "$_1234" "," "$z" ")"
                  ,au3-mode-+exp-inst-sep+
+                 ,au3-mode-+newline+
+                 ,au3-mode-+newline+
+                 ,au3-mode-+newline+
+                 ,au3-mode-+newline+
                  "Return" "$efg" "-" "$h1234"
                  ,au3-mode-+newline+
                  "EndFunc"))
@@ -1130,7 +1123,8 @@ Assumes it is called at a token boundary."
                (stop (point)))
           (should-not (null au3-mode--token-cache))
           (should (equal token exp-token))
-          (dotimes (x (if (equal token au3-mode-+newline+)
+          (dotimes (x (if (member token (list au3-mode-+newline+
+                                              au3-mode-+exp-inst-sep+))
                           1
                         (length token)))
             (should (equal (au3-mode--cache-get-token-from-beg
@@ -1163,6 +1157,10 @@ using `au3-mode-simplest-forward-token'."
       (dolist (exp-token
                (reverse `("Func" "abcd" "(" "$efg" "," "Const" "$_1234" "," "$z" ")"
                   ,au3-mode-+exp-inst-sep+
+                  ,au3-mode-+newline+
+                  ,au3-mode-+newline+
+                  ,au3-mode-+newline+
+                  ,au3-mode-+newline+
                   "Return" "$efg" "-" "$h1234"
                   ,au3-mode-+newline+
                   "EndFunc"
@@ -1182,13 +1180,36 @@ using `au3-mode-simplest-forward-token'."
     (should (equal (au3-mode--run-token-matcher fun "Fun|c@") "Func"))
     (should (equal (au3-mode--run-token-matcher fun "If _
 a|bcd@ Then") "abcd"))
-    (should (equal (au3-mode--run-token-matcher fun "Func a() ; comment
-; comment
-\t| ; more comments
+    (should (equal (au3-mode--run-token-matcher fun "Func a() ; comm|ent
+@; comment
+\t ; more comments
 #cs
   Hello
 #ce
-@ EndFunc") au3-mode-+exp-inst-sep+))
+ EndFunc") au3-mode-+exp-inst-sep+))
+    (should (equal (au3-mode--run-token-matcher fun "Func a() ; comment
+; comment
+\t ; more comments
+#c|s
+  Hello
+#ce
+@ EndFunc") au3-mode-+newline+))
+    ;; Disabled: au3-mode--skip-backward-over-complete-newline-token assumes
+    ;; it is called outside of a multiline comment.
+    ;; (should (equal (au3-mode--run-token-matcher fun "Func a() ; comment
+    ;; ; comment
+    ;; \t ; more comments
+    ;; #cs
+    ;;   Hel|lo
+    ;; #ce
+    ;; @ EndFunc") au3-mode-+newline+))
+    (should (equal (au3-mode--run-token-matcher fun "Func a() ; comment
+; comment
+\t| ; more comments
+@#cs
+  Hello
+#ce
+ EndFunc") au3-mode-+newline+))
     (should (equal (au3-mode--run-token-matcher fun "2+|3E2@") au3-mode-+number+))
     (should (equal (au3-mode--run-token-matcher fun "2+3|E2@") au3-mode-+number+))
     (should (equal (au3-mode--run-token-matcher fun "If\n2+a|bc@ Then") "abc"))
@@ -1199,17 +1220,22 @@ a|bcd@ Then") "abcd"))
                  ;; caching isn't mandatory, but if `token' was cached, check
                  ;; that the data is correct
                  (should (equal (au3-mode--cache-entry-token entry) token))
-                 (should (equal (au3-mode--cache-entry-beg entry) 2))
-                 (should (equal (au3-mode--cache-entry-end entry) 18))))
+                 ;; abuse of dynamic binding!
+                 (should (equal (au3-mode--cache-entry-beg entry) exp-beg))
+                 (should (equal (au3-mode--cache-entry-end entry) exp-end))))
              token)))
-     (should (equal (au3-mode--run-token-matcher fun "\t; c\n#c|s\n#ce\n\t; d@" nil nil post-val-fun)
-                    au3-mode-+newline+))
-     (should (equal (au3-mode--run-token-matcher fun "\t; c\n#cs\n#ce|\n\t; d@" nil nil post-val-fun)
-                    au3-mode-+newline+))
-     (should (equal (au3-mode--run-token-matcher fun "\t; c\n#cs\n#ce\n|\t; d@" nil nil post-val-fun)
-                    au3-mode-+newline+))
-     (should (equal (au3-mode--run-token-matcher fun "\t; c\n|#cs\n#ce\n\t; d@" nil nil post-val-fun)
-                    au3-mode-+newline+)))))
+      (let ((exp-beg 6)
+            (exp-end 14))
+        (should (equal (au3-mode--run-token-matcher fun "\t; c\n#c|s\n#ce\n@\t; d" nil nil post-val-fun)
+                       au3-mode-+newline+))
+        (should (equal (au3-mode--run-token-matcher fun "\t; z\n#cs\n#ce|\n@\t; d" nil nil post-val-fun)
+                       au3-mode-+newline+))
+        (should (equal (au3-mode--run-token-matcher fun "\t; x\n|#cs\n#ce\n@\t; d" nil nil post-val-fun)
+                       au3-mode-+newline+)))
+      (let ((exp-beg 16)
+            (exp-end 20))
+        (should (equal (au3-mode--run-token-matcher fun "\t; d\n#cs\n#ce\n \t;| d\n@" nil nil post-val-fun)
+                       au3-mode-+newline+))))))
 
 (ert-deftest test-au3-mode-simplest-forward-token ()
   :tags '(rewind)
@@ -1221,7 +1247,9 @@ a|bcd@ Then") "abcd"))
            ;; keywords are normalized
            ("if $a thEN" ("If" "$a" "Then;1;"))
            ("\t; c\n\t; d\nWinWait(;\n; handle\n$h\t;t\n)"
-            (,au3-mode-+newline+ "WinWait" "("
+            (,au3-mode-+newline+
+             ,au3-mode-+newline+ "WinWait" "("
+                                 ,au3-mode-+newline+
                                  ,au3-mode-+newline+ "$h"
                                  ,au3-mode-+newline+ ")"))
            ("Func _ \n\ta($x)\nReturn $x + 22\nEndFunc"
@@ -1248,20 +1276,23 @@ constructs specially to make up for the weakness of the operator
 precedence grammar (see SMIE documentation)."
   :tags '(token)
   (let ((fun 'au3-mode-simplest-forward-token))
-    ;; Single-line-if "Then" is different from multi-line-if "Then" (must
-    ;; include trailing au3-mode-+newline+ because two operators can't follow
-    ;; each other in the grammar)
+    ;; Single-line-if "Then" is different from multi-line-if "Then"
     (should (equal (au3-mode--run-token-matcher fun "If $a| then@ $b\n$c")
                    "Then;1;"))
-    (should (equal (au3-mode--run-token-matcher fun "If $a| then\n@ $b\nEndIf")
+    ;; ... from the middle of the token
+    (should (equal (au3-mode--run-token-matcher fun "If $a th|en@ $b\n$c")
+                   "Then;1;"))
+    (should (equal (au3-mode--run-token-matcher fun "If $a| then@\n $b\nEndIf")
                    "Then"))
     ;; ... from the middle of the token
+    (should (equal (au3-mode--run-token-matcher fun "If $a t|hen@\n $b\nEndIf")
+                   "Then"))
     (should (equal (au3-mode--run-token-matcher fun "If $a then|\n@ $b\nEndIf")
+                   au3-mode-+newline+))
+    (should (equal (au3-mode--run-token-matcher fun "If $a th|en@ ;c\n\t#cs\n#ce\n;d\n $b\nEndIf")
                    "Then"))
-    (should (equal (au3-mode--run-token-matcher fun "If $a th|en ;c\n\t#cs\n#ce\n;d\n@ $b\nEndIf")
-                   "Then"))
-    (should (equal (au3-mode--run-token-matcher fun "If $a _\n then ;|c\n\t#cs\n#ce\n;d\n@ $b\nEndIf")
-                   "Then"))
+    (should (equal (au3-mode--run-token-matcher fun "If $a _\n then ;|c\n@\t#cs\n#ce\n;d\n $b\nEndIf")
+                   au3-mode-+newline+))
     ;; The EndXXX type tokens shouldn't contain the preceding
     ;; au3-mode-+newline+ token
     (should (equal (au3-mode--run-token-matcher fun "If $a then\n$b|\n@EndIf")
@@ -1324,8 +1355,8 @@ precedence grammar (see SMIE documentation)."
   :tags '(token)
   (let ((fun (lambda () (au3-mode-simplest-backward-token t))))
     (should (equal (au3-mode--run-token-matcher fun "f(_,\n@$a|)") "$a"))
-    (should (equal (au3-mode--run-token-matcher fun "|@f(_,\n@$a|)") nil))
-    (should (equal (au3-mode--run-token-matcher fun "@\n\n\n\t|f(_,\n@$a|)")
+    (should-not (au3-mode--run-token-matcher fun "|@f(_,\n@$a|)"))
+    (should (equal (au3-mode--run-token-matcher fun "\n\n@\n\t|f(_,\n@$a|)")
                    au3-mode-+newline+))))
 
 (defun revert-autoit ()

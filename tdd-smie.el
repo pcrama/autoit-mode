@@ -587,6 +587,10 @@ multi-line comment."
 ;;   normally doesn't support it
 ;;
 ;; - Expression as a statement (presumably a function call)
+;;
+;; - While/WEnd
+;;
+;; - If/Then/EndIf
 (defvar sample-smie-grammar
   (smie-prec2->grammar
    (smie-bnf->prec2
@@ -596,6 +600,9 @@ multi-line comment."
         ;; (nonassoc "+=" "-=" "*=" "/=" "&=") ; no "^=" according to docs
        (exp)
        ("Func" exp ,au3-mode-+exp-inst-sep+ inst-list "EndFunc")
+       ("While" exp ,au3-mode-+exp-inst-sep+ inst-list "WEnd")
+       ("If" exp "Then" inst-list "EndIf")
+       ("If;1;" exp "Then;1;" inst)
        )
       (inst-list (inst-list ,au3-mode-+newline+ inst-list) (inst))
       (exp (exp "Or" exp)
@@ -839,21 +846,23 @@ EndFunc;>4"))
          )
         ((equal token au3-mode-+newline+)
          (cond ((eq kind :after)
-                ;; align with current statement
-                (save-excursion
-                  (let (prev-point
-                        (prev-statement-start
-                         (catch 'done
-                           (while t
-                             (setq prev-point (point))
-                             (let ((tok (au3-mode-simplest-backward-token)))
-                               (cond ((null tok)
-                                      (throw 'done (point-min)))
-                                     ((or (equal tok au3-mode-+newline+)
-                                          (equal tok au3-mode-+exp-inst-sep+))
-                                      (throw 'done prev-point))))))))
-                    (goto-char prev-statement-start)
-                    (cons 'column (current-column)))))
+                (if (smie-rule-parent-p "Then")
+                    (smie-rule-parent au3-mode-indent-basic)
+                  ;; align with current statement
+                  (save-excursion
+                    (let (prev-point
+                          (prev-statement-start
+                           (catch 'done
+                             (while t
+                               (setq prev-point (point))
+                               (let ((tok (au3-mode-simplest-backward-token)))
+                                 (cond ((null tok)
+                                        (throw 'done (point-min)))
+                                       ((or (equal tok au3-mode-+newline+)
+                                            (equal tok au3-mode-+exp-inst-sep+))
+                                        (throw 'done prev-point))))))))
+                      (goto-char prev-statement-start)
+                      (cons 'column (current-column))))))
                ((and (eq kind :before)
                      (eql (char-after) au3-mode-+comment+)
                      ;; we're looking at a comment line on its own, preceded
@@ -1014,23 +1023,12 @@ EndFunc")
 (ert-deftest test-au3-mode-indent2 ()
   ""
   :tags '(indent)
-  (au3-mode--should-indent "
-;<1
-While $a
-If 1 Then
-f(1, g(), _
-2)
-EndIf;>2
-WEnd;>1
-" "
-;<1
-While $a
-    If 1 Then
-        f(1, g(), _
-          2)
-    EndIf;>2
-WEnd;>1
-")
+  (au3-mode--should-indent
+   "Func fn($a)\n\n While a()\n\n    ;;comment\nWhile $b\nWhile b()\nf()\nWEnd\nwenD\n\n    ;c\n;d\n;e\n;f\nWEnd\nEndFunc\n\n"
+   "Func fn($a)\n\n    While a()\n\n        ;;comment\n        While $b\n            While b()\n                f()\n            WEnd\n        wenD\n\n        ;c\n        ;d\n        ;e\n        ;f\n    WEnd\nEndFunc\n\n")
+  (au3-mode--should-indent
+   "If a() Then\nIf b() Then\nc()\nEndIf\nEndIf"
+   "If a() Then\n    If b() Then\n        c()\n    EndIf\nEndIf")
   (au3-mode--should-indent "Func abcd($x, $y)
 ; this is a test
 Return 123
@@ -1055,6 +1053,12 @@ Func efghijklmn($z, _
         WEnd
     EndiF
 EndFunc")
+  (au3-mode--should-indent "if $a > long_func_name() Then _
+          test()"
+                           "if $a > long_func_name() Then _
+    test()")
+  (au3-mode--should-indent "If $a > 1 Then _\nIf $b > 1 Then _\nhello()"
+                           "If $a > 1 Then _\n    If $b > 1 Then _\n        hello()")
   (au3-mode--should-indent "if $long_var_name > long_func_name(_ ; comment
 8, _
 9) Then test()
@@ -1071,20 +1075,21 @@ f()
 g()
 EndIf"
                            "if $long_var_name > long_func_name(_ ; comment
-        8, _
-        9) Then test()
+       8, _
+       9) Then test()
 if $a > long_func_name(_ ; comment
-        8, _
-        9) Then _
+       8, _
+       9) Then _
     test()
 g()
 if $a > long_func_name(_ ; comment
-        8, _
-        9) Then
+       8, _
+       9) Then
     test()
     f()
     g()
 EndIf"))
+
 ;; (defun au3-mode--smie-rule (method arg)
 ;;   (pcase (cons method arg)
 ;;     (`(:before . "Func")
@@ -1227,72 +1232,100 @@ doesn't skip back over line continuation characters."
       (should (equal exp-token
                      (au3-mode--peek-bol-keyword (point)))))))
 
+(defun au3-mode--check-single/multi-line-if ()
+  "Return special token for single line If statement
+
+Assume that point is just after the If token."
+  (let* ((au3-mode--restrict-recursion t)
+         (plain-if "If")
+         (single-line-if (concat plain-if ";1;")))
+    (save-excursion
+      (catch 'done
+        (while t
+          (let ((next (au3-mode-simplest-forward-token t t)))
+            (cond ((or (eobp) (equal next au3-mode-+newline+))
+                   (throw 'done plain-if))
+                  ((equal next "Then;1;")
+                   (throw 'done single-line-if))
+                  ((equal next "Then")
+                   (throw 'done plain-if)))))))))
+
+(ert-deftest au3-mode-test-check-single/multi-line-if ()
+  "Test `au3-mode-test-check-single/multi-line-if'"
+  :tags '(token)
+  (let ((fut 'au3-mode--check-single/multi-line-if))
+    (dolist (input&exp '(("If|@" "If")
+                         ("If|@ 2 > $a" "If")
+                         ("If|@ 2 > $a Then" "If")
+                         ("If|@ 2 > $a Then hello()" "If;1;")
+                         ("If|@ 2 > $a Then hello()\nIf" "If;1;")
+                         ("If|@ 2 > $a Then\nhello()\nEndIf" "If")
+                         ("if|@ 2 > $a then hello()\nif" "If;1;")
+                         ("if|@ 2 > $a then\nhello()\nendif" "If")))
+      (should (equal (au3-mode--run-token-matcher fut (car input&exp)) (cadr input&exp))))))
+
 (defun au3-mode--simplest-forward-token-internal ()
   "Advance point and return token after point
 
 Assumes it is called at a token boundary."
-  (let ((start (point))
-        (after (char-after)))
-    (cond ((eobp) nil)
-          ((au3-mode-next-newline))
-          ((looking-at au3-mode-+number-regexp+)
-           (goto-char (match-end 0))
-           au3-mode-+number+)
-          ((looking-at au3-mode-+operator-regexp+)
-           (goto-char (match-end 0))
-           (let ((result (match-string-no-properties 0)))
-             (if (and (equal result "=") (not au3-mode--restrict-recursion))
-                 (save-excursion
-                   ;; `=' can be comparison or assignment operator
-                   (goto-char start)
-                   (let* ((au3-mode--restrict-recursion t)
-                          ;; first token going back
-                          (fst (au3-mode-simplest-backward-token t)))
-                     (if (string-prefix-p "$" fst)
-                       ;; variable name, so an assignment is likely
-                       (let ((snd (au3-mode-simplest-backward-token t)))
-                         (if (or (bobp)
-                                 (member snd (list au3-mode-+newline+
-                                                   au3-mode-+exp-inst-sep+
-                                                   ;; and Global, Const, Local?
-                                                   ",")))
-                             au3-mode-+assignment+
-                           result))
-                       result)))
-               result)))
-          ((member after '(?' ?\"))
-           (au3-mode-next-string))
-          ((or (<= ?a after ?z)
-               (<= ?A after ?Z)
-               (member after '(?_ ?@ ?$)))
-           (forward-char)
-           (skip-chars-forward "a-zA-Z0-9_")
-           (let* ((tok (buffer-substring-no-properties start (point)))
-                  (norm-tok (au3-mode--normalize-keyword tok)))
-             (cond ((equal norm-tok "If")
-                    (let ((next&pos (au3-mode--peek-token
-                                     'au3-mode-skip-to-next-token
-                                     'au3-mode--simplest-forward-token-internal)))
-                      (if (and next&pos (equal (car next&pos) "("))
-                          (concat norm-tok ";1;")
-                        norm-tok)))
-                   ((equal norm-tok "Then")
-                    (let ((next&pos (au3-mode--peek-token
-                                     'au3-mode-skip-to-next-token
-                                     'au3-mode--simplest-forward-token-internal)))
-                      (if (and next&pos (equal (car next&pos) au3-mode-+newline+))
-                          norm-tok
-                        (concat norm-tok ";1;"))))
-                   ((not norm-tok)      ; i.e. not a keyword
-                    (cond ((not (stringp tok))
-                           tok)
-                          ((or (eq after ?$) (eq after ?@))
-                           ;; $id or @macro
-                           tok)
-                          (t au3-mode-+function-id+)))
-                   (t norm-tok))))
-          (t (forward-char)
-             (buffer-substring-no-properties start (point))))))
+     (let ((start (point))
+           (after (char-after)))
+       (cond ((eobp) nil)
+             ((au3-mode-next-newline))
+             ((looking-at au3-mode-+number-regexp+)
+              (goto-char (match-end 0))
+              au3-mode-+number+)
+             ((looking-at au3-mode-+operator-regexp+)
+              (goto-char (match-end 0))
+              (let ((result (match-string-no-properties 0)))
+                (if (and (equal result "=") (not au3-mode--restrict-recursion))
+                    (save-excursion
+                      ;; `=' can be comparison or assignment operator
+                      (goto-char start)
+                      (let* ((au3-mode--restrict-recursion t)
+                             ;; first token going back
+                             (fst (au3-mode-simplest-backward-token t)))
+                        (if (string-prefix-p "$" fst)
+                            ;; variable name, so an assignment is likely
+                            (let ((snd (au3-mode-simplest-backward-token t)))
+                              (if (or (bobp)
+                                      (member snd (list au3-mode-+newline+
+                                                        au3-mode-+exp-inst-sep+
+                                                        ;; and Global, Const, Local?
+                                                        ",")))
+                                  au3-mode-+assignment+
+                                result))
+                          result)))
+                  result)))
+             ((member after '(?' ?\"))
+              (au3-mode-next-string))
+             ((or (<= ?a after ?z)
+                  (<= ?A after ?Z)
+                  (member after '(?_ ?@ ?$)))
+              (forward-char)
+              (skip-chars-forward "a-zA-Z0-9_")
+              (let* ((tok (buffer-substring-no-properties start (point)))
+                     (norm-tok (au3-mode--normalize-keyword tok)))
+                (cond ((equal norm-tok "If")
+                       (au3-mode--check-single/multi-line-if))
+                      ((equal norm-tok "Then")
+                       ;; If/If;1; depends on this
+                       (let ((next&pos (au3-mode--peek-token
+                                        'au3-mode-skip-to-next-token
+                                        'au3-mode--simplest-forward-token-internal)))
+                         (if (and next&pos (equal (car next&pos) au3-mode-+newline+))
+                             norm-tok
+                           (concat norm-tok ";1;"))))
+                      ((not norm-tok)   ; i.e. not a keyword
+                       (cond ((not (stringp tok))
+                              tok)
+                             ((or (eq after ?$) (eq after ?@))
+                              ;; $id or @macro
+                              tok)
+                             (t au3-mode-+function-id+)))
+                      (t norm-tok))))
+             (t (forward-char)
+                (buffer-substring-no-properties start (point))))))
 
 (defun au3-mode-simplest-forward-token (&optional internal-recurse no-caching)
   (let ((orig-start (point)))

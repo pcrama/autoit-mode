@@ -590,7 +590,7 @@ multi-line comment."
 ;;
 ;; - While/WEnd
 ;;
-;; - If/Then/EndIf
+;; - If/Then/EndIf + If/Then/Else/EndIf
 (defvar sample-smie-grammar
   (smie-prec2->grammar
    (smie-bnf->prec2
@@ -602,6 +602,7 @@ multi-line comment."
        ("Func" exp ,au3-mode-+exp-inst-sep+ inst-list "EndFunc")
        ("While" exp ,au3-mode-+exp-inst-sep+ inst-list "WEnd")
        ("If" exp "Then" inst-list "EndIf")
+       ("If" exp "Then" inst-list "Else" inst-list "EndIf")
        ("If;1;" exp "Then;1;" inst)
        )
       (inst-list (inst-list ,au3-mode-+newline+ inst-list) (inst))
@@ -846,23 +847,28 @@ EndFunc;>4"))
          )
         ((equal token au3-mode-+newline+)
          (cond ((eq kind :after)
-                (if (smie-rule-parent-p "Then")
-                    (smie-rule-parent au3-mode-indent-basic)
-                  ;; align with current statement
-                  (save-excursion
-                    (let (prev-point
-                          (prev-statement-start
-                           (catch 'done
-                             (while t
-                               (setq prev-point (point))
-                               (let ((tok (au3-mode-simplest-backward-token)))
-                                 (cond ((null tok)
-                                        (throw 'done (point-min)))
-                                       ((or (equal tok au3-mode-+newline+)
-                                            (equal tok au3-mode-+exp-inst-sep+))
-                                        (throw 'done prev-point))))))))
-                      (goto-char prev-statement-start)
-                      (cons 'column (current-column))))))
+                (cond ((equal (save-excursion (progn
+                                                (au3-mode-simplest-forward-token)
+                                                (au3-mode-simplest-forward-token)))
+                              "Else")
+                       (smie-rule-parent 0))
+                      ((smie-rule-parent-p "Then")
+                       (smie-rule-parent au3-mode-indent-basic))
+                      (t ;; align with current statement
+                       (save-excursion
+                         (let (prev-point
+                               (prev-statement-start
+                                (catch 'done
+                                  (while t
+                                    (setq prev-point (point))
+                                    (let ((tok (au3-mode-simplest-backward-token)))
+                                      (cond ((null tok)
+                                             (throw 'done (point-min)))
+                                            ((or (equal tok au3-mode-+newline+)
+                                                 (equal tok au3-mode-+exp-inst-sep+))
+                                             (throw 'done prev-point))))))))
+                           (goto-char prev-statement-start)
+                           (cons 'column (current-column)))))))
                ((and (eq kind :before)
                      (eql (char-after) au3-mode-+comment+)
                      ;; we're looking at a comment line on its own, preceded
@@ -1021,7 +1027,7 @@ EndFunc")
 )
 
 (ert-deftest test-au3-mode-indent2 ()
-  ""
+  "Reduced language, level 2"
   :tags '(indent)
   (au3-mode--should-indent
    "Func fn($a)\n\n While a()\n\n    ;;comment\nWhile $b\nWhile b()\nf()\nWEnd\nwenD\n\n    ;c\n;d\n;e\n;f\nWEnd\nEndFunc\n\n"
@@ -1089,6 +1095,13 @@ if $a > long_func_name(_ ; comment
     f()
     g()
 EndIf"))
+
+(ert-deftest test-au3-mode-indent3 ()
+  "Reduced language, level 3"
+  :tags '(indent)
+  (au3-mode--should-indent
+   "If $a > 1 Then\na()\nElse\nb()\nEndIf"
+   "If $a > 1 Then\n    a()\nElse\n    b()\nEndIf"))
 
 ;; (defun au3-mode--smie-rule (method arg)
 ;;   (pcase (cons method arg)

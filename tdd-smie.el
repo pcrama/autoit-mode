@@ -590,7 +590,7 @@ multi-line comment."
 ;;
 ;; - While/WEnd
 ;;
-;; - If/Then/EndIf + If/Then/Else/EndIf
+;; - If/Then/EndIf + If/Then/Else/EndIf + single line if
 (defvar sample-smie-grammar
   (smie-prec2->grammar
    (smie-bnf->prec2
@@ -771,33 +771,69 @@ EndFunc;>4"))
 
 (defun au3-mode-indent-comment ()
   "A function for `smie-indent-functions' (which see)."
-  ;; copied/modifed from octave-indent-comment
+  ;; This function handles comments on a line of their own.  SMIE calls it in
+  ;; 2 cases: either with point before a token (which a comment isn't, so the
+  ;; function declines by returning nil) or at the start of a new line with
+  ;; point on the first non blank character, i.e. the comment start character.
+  ;;
+  ;; TODO: handle multiline comments (#cs/#ce)
   (save-excursion
-    (back-to-indentation)
-    (cond
-     ;; TODO: handle multiline comments
-     ;; ((octave-in-string-or-comment-p) nil)
-     ;; TODO: what's this regex?
-     ;; ((looking-at-p "\\(\\s<\\)\\1\\{2,\\}")
-     ;;  0)
-     ((eql (char-after) au3-mode-+comment+)
-      (if (eql (char-after (1+ (point))) au3-mode-+comment+)
-          (if (and (eql (char-after (+ 2 (point))) au3-mode-+comment+)
-                   (save-excursion (skip-chars-forward (string au3-mode-+comment+))
-                                   (not (= (point) (line-end-position)))))
-              ;; triple or more comment markers `;;;' are treated as section
-              ;; headings if they aren't followed by newline, otherwise, they
-              ;; are treated as a comment box
-              0
-            ;; Double comment marker `;;' get indented like surrounding code ->
-            ;; let another SMIE function handle it
-            nil)
-        ;; single comment marker `;'
-        (comment-choose-indent))))))
+    (ignore-errors
+      (let ((pt (point)))
+        (with-current-buffer "*log*"
+          (goto-char (point-max))
+          (insert (format "* indent comment %d\n" pt)))))
+    (when (eql (char-after) au3-mode-+comment+)
+      ;; ;; skip any blank lines
+      ;; (while (and (zerop (forward-line -1))
+      ;;             (looking-at-p "^[ \t]*$")))
+      ;; ;; 2 cases: line with only a comment preceded by another comment or some
+      ;; ;; code (skipping blank lines)
+      ;; (if (bobp)
+      ;;     0
+      ;;   (back-to-indentation)
+      ;;   (if (eql (char-after) au3-mode-+comment+)
+      ;;       ;; align on previous column
+      ;;       (current-column)
+      ;;     ;; looking at code: compute indentation properly
+      ;;     ))
+      (let ((result
+             (let (penultimate
+                   current
+                   last-pos
+                   non-newline-seen
+                   (is-newline-p (lambda (tok)
+                                   (or (equal current au3-mode-+newline+)
+                                       (equal current au3-mode-+exp-inst-sep+)))))
+               (catch 'done
+                 (while t
+                   (setq last-pos (point)
+                         penultimate current
+                         current (au3-mode-simplest-backward-token non-newline-seen)
+                         non-newline-seen (or non-newline-seen
+                                              (not (funcall is-newline-p current))))
+                   (when (or (and non-newline-seen
+                                  (funcall is-newline-p current))
+                             (null current))
+                     (when current
+                       (goto-char last-pos)
+                       (back-to-indentation))
+                     (throw 'done
+                            (+ (current-column)
+                               (if (member penultimate
+                                           '("If" "Else" "Func" "For" "While"))
+                                   au3-mode-indent-basic
+                                 0)))))
+                 0))))
+        (ignore-errors
+          (with-current-buffer "*log*"
+            (goto-char (point-max))
+            (insert (format "result = %d\n" result))))
+        result))))
 
 (defun au3-mode--smie-rule (kind token)
   (ignore-errors (setq au3-smie-rule-sibling-while-if (smie-rule-sibling-p)))
-  (ignore-errors (setq au3-smie-rule-parent-while-if (smie-rule-parent-p "+" "$hello" ";number;" "=" "While" "If" "Func" "Then" au3-mode-+newline+ au3-mode-+exp-inst-sep+)))
+  (ignore-errors (setq au3-smie-rule-parent-while-if (smie-rule-parent-p "While" "If" "Func" "Then" "Else" au3-mode-+newline+ au3-mode-+exp-inst-sep+)))
   (cond ((and (eql kind :elem)
               (or (eql token 'basic)
                   (eql token 'args)))
@@ -852,7 +888,7 @@ EndFunc;>4"))
                                                 (au3-mode-simplest-forward-token)))
                               "Else")
                        (smie-rule-parent 0))
-                      ((smie-rule-parent-p "Then")
+                      ((smie-rule-parent-p "Then" "Else")
                        (smie-rule-parent au3-mode-indent-basic))
                       (t ;; align with current statement
                        (save-excursion
@@ -1096,12 +1132,65 @@ if $a > long_func_name(_ ; comment
     g()
 EndIf"))
 
+(ert-deftest test-au3-mode-indent-comment ()
+  "Indentation of comments"
+  :tags '(indent)
+  (dolist
+      (src&should
+       '(("If $a Then\n; c\n; d\n; e\nf()\nEndIf"
+          "If $a Then\n    ; c\n    ; d\n    ; e\n    f()\nEndIf")
+         ("If $a Then\n    ; c\n ; d\n  ; e\nf()\nEndIf"
+          "If $a Then\n    ; c\n    ; d\n    ; e\n    f()\nEndIf")
+         ("If $a Then\nf() ; c\n; d\n; e\nf()\nEndIf"
+          "If $a Then\n    f() ; c\n    ; d\n    ; e\n    f()\nEndIf")
+         ("If $a Then\nc()\nd()\n; e\n; f\nEndIf"
+          "If $a Then\n    c()\n    d()\n    ; e\n    ; f\nEndIf")
+         ("If $a Then\nc()\nd()\n; c\n; d\n; e\nf()\nEndIf"
+          "If $a Then\n    c()\n    d()\n    ; c\n    ; d\n    ; e\n    f()\nEndIf")
+         ("If $a Then b()\n    ; c\n ; d"
+          "If $a Then b()\n; c\n; d")
+         ("While az(_\n1, _\n2) > b(3, 4, _\n5)\nc()\n; d\n; e\n; f\nWend\n"
+          "While az(_\n        1, _\n        2) > b(3, 4, _\n               5)\n    c()\n    ; d\n    ; e\n    ; f\nWend\n")
+         ("While az(_\n1, _\n2) > b(3, 4, _\n5)\nc1()\nc2()\n; d\n; e\n; f\nWend\n"
+          "While az(_\n        1, _\n        2) > b(3, 4, _\n               5)\n    c1()\n    c2()\n    ; d\n    ; e\n    ; f\nWend\n")
+         ("While az(_\n1, _\n2) > b(3, 4, _\n5)\nc1()\nc2()\n; d\n; e\n; f\nIf $a Then\n; c\n; d\n; e\nf()\nEndIf\nIf $a Then\n; c\n; d\n; e\nf()\nEndIf\nWend\n"
+          "While az(_\n        1, _\n        2) > b(3, 4, _\n               5)\n    c1()\n    c2()\n    ; d\n    ; e\n    ; f\n    If $a Then\n        ; c\n        ; d\n        ; e\n        f()\n    EndIf\n    If $a Then\n        ; c\n        ; d\n        ; e\n        f()\n    EndIf\nWend\n")
+         ("\n       ; 00\n  ; 11\n\nWhile az(_\n1, _\n  2) > b(3, 4, _\n       5)\n If $a _\n     Then\n ; c\n      ; d\n     If _\n     $g _\nThen\n\n     ; i\n\n     ; j\n\n\n   ; k\n\n\n     l()\n\n   ; m\n ; n\n\n  EndIf\n      ; e\n     f()\n       EndIf\n\n    ; d\n\n  ; e\n ; f\n\n    Wend"
+          "\n; 00\n; 11\n\nWhile az(_\n        1, _\n        2) > b(3, 4, _\n               5)\n    If $a _\n    Then\n        ; c\n        ; d\n        If _\n            $g _\n        Then\n\n            ; i\n\n            ; j\n\n\n            ; k\n\n\n            l()\n\n            ; m\n            ; n\n\n        EndIf\n        ; e\n        f()\n    EndIf\n\n    ; d\n\n    ; e\n    ; f\n\nWend")))
+    (au3-mode--should-indent (car src&should) (cadr src&should))))
+
 (ert-deftest test-au3-mode-indent3 ()
   "Reduced language, level 3"
   :tags '(indent)
-  (au3-mode--should-indent
-   "If $a > 1 Then\na()\nElse\nb()\nEndIf"
-   "If $a > 1 Then\n    a()\nElse\n    b()\nEndIf"))
+  (dolist
+      (src&should
+       '(("If $a > 1 Then\na()\nElse\nb()\nEndIf"
+          "If $a > 1 Then\n    a()\nElse\n    b()\nEndIf")
+         ("If $a > 1 Then\na()\naa()\nElse\nb()\nEndIf"
+          "If $a > 1 Then\n    a()\n    aa()\nElse\n    b()\nEndIf")
+         ("If $a > 1 Then\na()\nElse\nb()\naa()\nEndIf"
+          "If $a > 1 Then\n    a()\nElse\n    b()\n    aa()\nEndIf")
+         ("If $a > 1 Then\na()\nIf $b = 2 Then $b = 3\nElse\nb()\naa()\nEndIf"
+          "If $a > 1 Then\n    a()\n    If $b = 2 Then $b = 3\nElse\n    b()\n    aa()\nEndIf")
+         ("If $a > 1 Then\na()\nElse\nb()\nIf $b = 2 Then $b = 3\naa()\nEndIf"
+          "If $a > 1 Then\n    a()\nElse\n    b()\n    If $b = 2 Then $b = 3\n    aa()\nEndIf")
+         ("If $a > 1 Then\na()\nElse\nb()\nIf $b = 2 Then\n$b = 3\nElse\naa()\nEndIf\nEndIf"
+          "If $a > 1 Then\n    a()\nElse\n    b()\n    If $b = 2 Then\n        $b = 3\n    Else\n        aa()\n    EndIf\nEndIf")
+         ("If a() Then\n b()\n; c1\n; c2\nElse\n d()\nEndif\n"
+          "If a() Then
+    b()
+    ; c1
+    ; c2
+Else
+    d()
+Endif
+")
+         ("If a() Then\n; c1\n; c2\nb()\n;c3\nElse\n; c4\nd()\n; c5\n; c6\nEndif\n"
+          "If a() Then\n    ; c1\n    ; c2\n    b()\n    ;c3\nElse\n    ; c4\n    d()\n    ; c5\n    ; c6\nEndif\n")
+         ("If $a > 1 Then\nWhile a()\nc(_\nd(_\ne(), _\n2))\n     c1(1,_\n        d(1,_\n         e() ), _\n       2)\nWEnd\nElse\nWhile a()\nIf c(_\nd(_\ne(), _\n2)) Then\nf()\nElse\ng()\nIf h() _\n+ 4 < _\n5 _\nThen\n; c1\n; c2\ni()\nj()\nElse\nk()\nEndif\nEndIf\nWEnd\nIf b() Then\nl()\nm()\nEndIf\nENDIF"
+          "If $a > 1 Then\n    While a()\n        c(_\n            d(_\n                e(), _\n                2))\n        c1(1,_\n           d(1,_\n             e() ), _\n           2)\n    WEnd\nElse\n    While a()\n        If c(_\n                d(_\n                    e(), _\n                    2)) Then\n            f()\n        Else\n            g()\n            If h() _\n               + 4 < _\n               5 _\n            Then\n                ; c1\n                ; c2\n                i()\n                j()\n            Else\n                k()\n            Endif\n        EndIf\n    WEnd\n    If b() Then\n        l()\n        m()\n    EndIf\nENDIF"))
+       )
+      (au3-mode--should-indent (car src&should) (cadr src&should))))
 
 ;; (defun au3-mode--smie-rule (method arg)
 ;;   (pcase (cons method arg)
@@ -1150,10 +1239,10 @@ EndIf"))
   ;;             ;; :backward-token 'au3-mode--smie-backward-token
   ;;             :forward-token 'au3-mode-simplest-forward-token
   ;;             :backward-token 'au3-mode-simplest-backward-token)
-  ;; (add-hook (make-variable-buffer-local 'smie-indent-functions)
-  ;;           'au3-mode-indent-comment
-  ;;           nil
-  ;;           t)
+  (add-hook (make-variable-buffer-local 'smie-indent-functions)
+            'au3-mode-indent-comment
+            nil
+            t)
   )
 
 (defvar au3-mode--restrict-recursion nil

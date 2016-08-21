@@ -1221,6 +1221,30 @@ Endif
 ;;   ;;  (smie-rule-separator method))
 ;;   )
 
+(ert-deftest test-au3-mode-indent-preserve-lines-with-blanks-only ()
+  "Lines containing only blanks shouldn't be modified"
+  :tags '(indent)
+  (dolist
+      (src&should
+       '(("    \n    s()\n    \n    "
+          "    \ns()\n    \n    ")
+         ("\n \n  \n   \n    \n"
+          "\n \n  \n   \n    \n")
+         ("If $a > 1 Then\n \n  \na()\n   \n    \nElse\n\t\n \n\t \t\nb()\n    \n \n\nEndIf"
+          "If $a > 1 Then\n \n  \n    a()\n   \n    \nElse\n\t\n \n\t \t\n    b()\n    \n \n\nEndIf")
+         ("If $a > 1 then\n\n\nWhile a()\n    \t\nc(_\nd(_\ne(), _\n2))\n    \t\t\n     c1(1,_\n        d(1,_\n         e() ), _\n       2)\n   \nWEnd\n    \t\t\nElse\n    \t\t \nWhile a()\n    \t\t  \nIf c(_\nd(_\ne(), _\n2)) then\n    \t\t \n    \t\nf()\n    \t\t   \t \t\nElse\n    \t\t   \t \t \ng()\n    \t\t   \t\nIf h() _\n+ 4 < _\n5 _\nthen\n    \t\t   \t \t \n    \t\t\n; c1\n   \n; c2\n \ni()\n    \t\t\nj()\n    \t\nElse\n    \t\t\nk()\n   \nEndif\n    \t\t\nEndIf\n    \t\t \nWEnd\n    \t\t  \nIf b() then\n    \t\t \n    \t\t \nl()\n    \t\t   \t \t\nm()\n    \t\t   \t \t \nEndIf\n    \t\t   \t\nENDIF"
+          "If $a > 1 then\n\n\n    While a()\n    \t\n        c(_\n            d(_\n                e(), _\n                2))\n    \t\t\n        c1(1,_\n           d(1,_\n             e() ), _\n           2)\n   \n    WEnd\n    \t\t\nElse\n    \t\t \n    While a()\n    \t\t  \n        If c(_\n                d(_\n                    e(), _\n                    2)) then\n    \t\t \n    \t\n            f()\n    \t\t   \t \t\n        Else\n    \t\t   \t \t \n            g()\n    \t\t   \t\n            If h() _\n               + 4 < _\n               5 _\n            then\n    \t\t   \t \t \n    \t\t\n                ; c1\n   \n                ; c2\n \n                i()\n    \t\t\n                j()\n    \t\n            Else\n    \t\t\n                k()\n   \n            Endif\n    \t\t\n        EndIf\n    \t\t \n    WEnd\n    \t\t  \n    If b() then\n    \t\t \n    \t\t \n        l()\n    \t\t   \t \t\n        m()\n    \t\t   \t \t \n    EndIf\n    \t\t   \t\nENDIF"))
+       )
+    (au3-mode--should-indent (car src&should) (cadr src&should))))
+
+(defun au3-mode-indent-blank-only-line ()
+  ;; make sure that lines containing only spaces and tabs aren't touched by
+  ;; SMIE.  The implementation assumes (after looking at SMIE's source code)
+  ;; that it will only be called after skipping from BOL to the first non
+  ;; space/tab character.
+  (when (eolp)
+    'noindent))
+
 (defun au3-mode--smie-setup (&optional rule)
   (set-syntax-table autoit-mode-syntax-table)
   (set (make-variable-buffer-local 'comment-use-syntax) t)
@@ -1239,10 +1263,12 @@ Endif
   ;;             ;; :backward-token 'au3-mode--smie-backward-token
   ;;             :forward-token 'au3-mode-simplest-forward-token
   ;;             :backward-token 'au3-mode-simplest-backward-token)
-  (add-hook (make-variable-buffer-local 'smie-indent-functions)
-            'au3-mode-indent-comment
-            nil
-            t)
+  (dolist (hook '(au3-mode-indent-blank-only-line
+                  au3-mode-indent-comment))
+    (add-hook (make-variable-buffer-local 'smie-indent-functions)
+              hook
+              nil
+              t))
   )
 
 (defvar au3-mode--restrict-recursion nil

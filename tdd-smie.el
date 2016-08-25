@@ -590,7 +590,7 @@ multi-line comment."
 ;;
 ;; - While/WEnd
 ;;
-;; - If/Then/EndIf + If/Then/Else/EndIf + single line if
+;; - If/Then/EndIf + If/Then/Else/ElseIf/EndIf + single line if
 (defvar sample-smie-grammar
   (smie-prec2->grammar
    (smie-bnf->prec2
@@ -602,9 +602,16 @@ multi-line comment."
        ("Func" exp ,au3-mode-+exp-inst-sep+ inst-list "EndFunc")
        ("While" exp ,au3-mode-+exp-inst-sep+ inst-list "WEnd")
        ("If" exp "Then" inst-list "EndIf")
-       ("If" exp "Then" inst-list "Else" inst-list "EndIf")
+       ("If" exp "Then" finish-if-1 "EndIf")
+       ("If" exp "Then" finish-if-2 "EndIf")
        ("If;1;" exp "Then;1;" inst)
        )
+      (finish-if-1
+       (inst-list "Else" inst-list))
+      (finish-if-2
+       ("ElseIf" exp "Then;2;" inst-list)
+       ("ElseIf" exp "Then;2;" finish-if-1)
+       ("ElseIf" exp "Then;2;" finish-if-2))
       (inst-list (inst-list ,au3-mode-+newline+ inst-list) (inst))
       (exp (exp "Or" exp)
            (exp "And" exp)
@@ -833,13 +840,13 @@ EndFunc;>4"))
 
 (defun au3-mode--smie-rule (kind token)
   (ignore-errors (setq au3-smie-rule-sibling-while-if (smie-rule-sibling-p)))
-  (ignore-errors (setq au3-smie-rule-parent-while-if (smie-rule-parent-p "While" "If" "Func" "Then" "Else" au3-mode-+newline+ au3-mode-+exp-inst-sep+)))
+  (ignore-errors (setq au3-smie-rule-parent-while-if (smie-rule-parent-p "While" "If" "Func" "Then" "Else" au3-mode-+newline+ au3-mode-+exp-inst-sep+ "ElseIf" "Then;2;")))
   (cond ((and (eql kind :elem)
               (or (eql token 'basic)
                   (eql token 'args)))
          au3-mode-indent-basic)
         ((and (eql kind :before)
-              (equal token "EndFunc"))
+              (member token '("EndIf" "Else" "ElseIf" "EndFunc")))
          (smie-rule-parent))
         ((and (eql kind :after)
               (equal token au3-mode-+exp-inst-sep+))
@@ -888,7 +895,7 @@ EndFunc;>4"))
                                                 (au3-mode-simplest-forward-token)))
                               "Else")
                        (smie-rule-parent 0))
-                      ((smie-rule-parent-p "Then" "Else")
+                      ((smie-rule-parent-p "Then" "Else" "Then;2;")
                        (smie-rule-parent au3-mode-indent-basic))
                       (t ;; align with current statement
                        (save-excursion
@@ -1190,6 +1197,46 @@ Endif
          ("If $a > 1 Then\nWhile a()\nc(_\nd(_\ne(), _\n2))\n     c1(1,_\n        d(1,_\n         e() ), _\n       2)\nWEnd\nElse\nWhile a()\nIf c(_\nd(_\ne(), _\n2)) Then\nf()\nElse\ng()\nIf h() _\n+ 4 < _\n5 _\nThen\n; c1\n; c2\ni()\nj()\nElse\nk()\nEndif\nEndIf\nWEnd\nIf b() Then\nl()\nm()\nEndIf\nENDIF"
           "If $a > 1 Then\n    While a()\n        c(_\n            d(_\n                e(), _\n                2))\n        c1(1,_\n           d(1,_\n             e() ), _\n           2)\n    WEnd\nElse\n    While a()\n        If c(_\n                d(_\n                    e(), _\n                    2)) Then\n            f()\n        Else\n            g()\n            If h() _\n               + 4 < _\n               5 _\n            Then\n                ; c1\n                ; c2\n                i()\n                j()\n            Else\n                k()\n            Endif\n        EndIf\n    WEnd\n    If b() Then\n        l()\n        m()\n    EndIf\nENDIF"))
        )
+    (au3-mode--should-indent (car src&should) (cadr src&should))))
+
+(ert-deftest test-au3-mode-parse-elseif-related-tokens ()
+  "Parsing of ElseIf"
+  :tags '(token)
+  (let ((data+exp '(("If $a |then@\nb()\nelseif $c then\nd()\nendif" "Then")
+                    ("If $a |then@\nb()\nelseif" "Then")
+                    ("If $a then\nb()\nelseif $c |then@\nd()\nendif" "Then;2;")
+                    ;; unless there's a newline following `then', `then' is
+                    ;; always seen as "then;1;". Since the statement is
+                    ;; incomplete anyway, the wrong parsing isn't too bad.
+                    ;;
+                    ;; ("If $a then\nb()\nelseif $c |then@" "Then;2;")
+                    ("If $a then\nb()\nelseif $c |then@\n" "Then;2;")
+                    ("If $a then\nb()\nelseif $c - _ \n1 |then@\n" "Then;2;"))))
+    (dolist (d+e data+exp)
+      (should (equal (au3-mode--run-token-matcher 'au3-mode-simplest-forward-token
+                                                  (car d+e))
+                     (cadr d+e)))
+      (should (equal (au3-mode--run-token-matcher 'au3-mode-simplest-backward-token
+                                                  (car d+e)
+                                                  "@"
+                                                  "|")
+                     (cadr d+e))))))
+
+(ert-deftest test-au3-mode-indent4 ()
+  "Reduced language, level 3 + ElseIf"
+  :tags '(indent)
+  (dolist
+      (src&should
+       '(("If $a > 1 Then\na()\nElseif b() then\nc()\nEndIf"
+          "If $a > 1 Then\n    a()\nElseif b() then\n    c()\nEndIf")
+         ("If $a > 1 Then\na()\nElseif b() then\nc()\nElse\nd()\nEndIf"
+          "If $a > 1 Then\n    a()\nElseif b() then\n    c()\nElse\n    d()\nEndIf")
+         ("If $a > 1 Then\na()\nElseif b() then\nc()\nElse\nd()\nEndIf"
+          "If $a > 1 Then\n    a()\nElseif b() then\n    c()\nElse\n    d()\nEndIf")
+         ("If $a > 1 Then\na()\nElseif b() then\nc()\nElseIf $d then\n\ne()\nEndIf"
+          "If $a > 1 Then\n    a()\nElseif b() then\n    c()\nElseIf $d then\n\n    e()\nEndIf")
+         ("while $a0 > _ ; c0\n1234\nIf $a > 1 Then\na()\nElseif (b(_\n)) then\nIf c() Then\nd0()\ne0()\nElseIf $d then\ne()\nEndIf\nf()\nendif\nwend"
+          "while $a0 > _ ; c0\n      1234\n    If $a > 1 Then\n        a()\n    Elseif (b(_\n             )) then\n        If c() Then\n            d0()\n            e0()\n        ElseIf $d then\n            e()\n        EndIf\n        f()\n    endif\nwend")))
       (au3-mode--should-indent (car src&should) (cadr src&should))))
 
 ;; (defun au3-mode--smie-rule (method arg)
@@ -1442,7 +1489,9 @@ Assumes it is called at a token boundary."
                                         'au3-mode-skip-to-next-token
                                         'au3-mode--simplest-forward-token-internal)))
                          (if (and next&pos (equal (car next&pos) au3-mode-+newline+))
-                             norm-tok
+                             (if (equal (au3-mode--peek-bol-keyword start) "ElseIf")
+                                 (concat norm-tok ";2;")
+                                 norm-tok)
                            (concat norm-tok ";1;"))))
                       ((not norm-tok)   ; i.e. not a keyword
                        (cond ((not (stringp tok))

@@ -828,7 +828,7 @@ EndFunc;>4"))
                      (throw 'done
                             (+ (current-column)
                                (if (member penultimate
-                                           '("If" "Else" "Func" "For" "While"))
+                                           '("If" "Else" "ElseIf" "Func" "For" "While"))
                                    au3-mode-indent-basic
                                  0)))))
                  0))))
@@ -1235,6 +1235,8 @@ Endif
           "If $a > 1 Then\n    a()\nElseif b() then\n    c()\nElse\n    d()\nEndIf")
          ("If $a > 1 Then\na()\nElseif b() then\nc()\nElseIf $d then\n\ne()\nEndIf"
           "If $a > 1 Then\n    a()\nElseif b() then\n    c()\nElseIf $d then\n\n    e()\nEndIf")
+         ("If $z Then\nz()\nElseIf $a Then\n; c0\n; d0\na()\nb()\nElseIf $c Then\n; c1\n; d1\nc()\nd()\nElseIf $e Then\n; c2\n; d2\ne()\nf()\nElseIf $g Then\n; c3\n; d3\ng()\nh()\nElseIf $i Then\n; c4\n; d4\ni()\nj()\nElseIf $k Then\n; c5\n; d5\nk()\nl()\nElseIf $m Then\n; c6\n; d6\nm()\nn()\nElseIf $o Then\n; c7\n; d7\no()\np()\nElseIf $q Then\n; c8\n; d8\nq()\nr()\nElseIf $s Then\n; c9\n; d9\ns()\nt()\nElse\nz()\nEndIf"
+          "If $z Then\n    z()\nElseIf $a Then\n    ; c0\n    ; d0\n    a()\n    b()\nElseIf $c Then\n    ; c1\n    ; d1\n    c()\n    d()\nElseIf $e Then\n    ; c2\n    ; d2\n    e()\n    f()\nElseIf $g Then\n    ; c3\n    ; d3\n    g()\n    h()\nElseIf $i Then\n    ; c4\n    ; d4\n    i()\n    j()\nElseIf $k Then\n    ; c5\n    ; d5\n    k()\n    l()\nElseIf $m Then\n    ; c6\n    ; d6\n    m()\n    n()\nElseIf $o Then\n    ; c7\n    ; d7\n    o()\n    p()\nElseIf $q Then\n    ; c8\n    ; d8\n    q()\n    r()\nElseIf $s Then\n    ; c9\n    ; d9\n    s()\n    t()\nElse\n    z()\nEndIf")
          ("while $a0 > _ ; c0\n1234\nIf $a > 1 Then\na()\nElseif (b(_\n)) then\nIf c() Then\nd0()\ne0()\nElseIf $d then\ne()\nEndIf\nf()\nendif\nwend"
           "while $a0 > _ ; c0\n      1234\n    If $a > 1 Then\n        a()\n    Elseif (b(_\n             )) then\n        If c() Then\n            d0()\n            e0()\n        ElseIf $d then\n            e()\n        EndIf\n        f()\n    endif\nwend")))
       (au3-mode--should-indent (car src&should) (cadr src&should))))

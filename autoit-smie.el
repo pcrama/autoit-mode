@@ -1,3 +1,5 @@
+;;; autoit-smie.el --- AutoIt navigation and indentation
+
 (require 'smie)
 
 (defconst autoit-reserved-word-list

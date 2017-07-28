@@ -59,6 +59,8 @@
 ;;      defined in function and variable declarations, and all builtin
 ;;      function names, wherever they appear.
 
+(require 'cl-lib)
+
 (defconst autoit-font-lock-keywords-1
   (list
    (cons (concat "\\<\\(" (regexp-opt autoit-builtins t) "\\)\\>")
@@ -101,7 +103,7 @@
   "Syntax table for `autoit-mode'")
 
 (defun autoit-mode-jump-to-include-file (&rest args)
-  (find-file (first args) nil))
+  (find-file (cl-first args) nil))
 
 (defun imenu--sort-by-position (item1 item2)
   (< (if (consp (cdr item1)) (cadr item1) (cdr item1))
@@ -270,7 +272,7 @@ name/parameters unless this length is exceeded.")
                     (< (point) old))
           (let ((comma-old (point)))
             (if (equal (autoit-smie-forward-token) ",")
-                (incf pos)
+		(cl-incf pos)
               (goto-char comma-old))))
         (let* ((result (concat fun ": "))
                (par-seq (car fun-info))
@@ -278,7 +280,7 @@ name/parameters unless this length is exceeded.")
                start-idx end-idx
                start-doc)
           (dotimes (i (length par-seq))
-            (when (plusp i) (setq result (concat result ", ")))
+	    (when (cl-plusp i) (setq result (concat result ", ")))
             (when (= i pos) (setq start-idx (length result)))
             (setq result (concat result (elt par-seq i)))
             (when (= i pos) (setq end-idx (length result))))
@@ -355,7 +357,7 @@ name/parameters unless this length is exceeded.")
                    done
                    future-optional-par
                    optional-par)
-              (labels ((forward-ignore-square-brackets
+	      (cl-labels ((forward-ignore-square-brackets
                         ()
                         (let (done tok)
                           (while (not done)
@@ -390,12 +392,12 @@ name/parameters unless this length is exceeded.")
                                      (while (setq tok (pop rev-par-tokens))
                                        (cond ((equal tok "=")
                                               (push tok parts))
-                                             ((endp rev-par-tokens)
+					     ((cl-endp rev-par-tokens)
                                               (push tok parts))
                                              ((equal "=" (car rev-par-tokens))
                                               (push tok parts))
                                              (t (setq parts
-                                                      (list* " " tok parts)))))
+						      (cl-list* " " tok parts)))))
                                      (when optional-par
                                        (push "[" parts))
                                      parts))
@@ -478,19 +480,19 @@ name/parameters unless this length is exceeded.")
                                      (while (setq tok (pop rev-par-tokens))
                                        (cond ((equal tok "=")
                                               (push tok parts))
-                                             ((endp rev-par-tokens)
+					     ((cl-endp rev-par-tokens)
                                               (push tok parts))
                                              ((equal "=" (car rev-par-tokens))
                                               (push tok parts))
                                              (t (setq parts
-                                                      (list* " " tok parts)))))
+						      (cl-list* " " tok parts)))))
                                      parts))
                             reversed-parameters)))
                   (message "%S" (autoit-eldoc-make-entry
                                  file pos
-                                 (caddr info) (reverse reversed-parameters)
+				 (cl-caddr info) (reverse reversed-parameters)
                                  (cadr info)))
-                  (puthash (caddr info)
+		  (puthash (cl-caddr info)
                            (list (reverse reversed-parameters)
                                  (cadr info)
                                  'udf)

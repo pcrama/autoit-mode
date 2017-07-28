@@ -3,6 +3,7 @@
 ;; Version: 2017-07-28
 
 (require 'smie)
+(require 'cl-lib)
 
 (defconst autoit-reserved-word-list
   '("if" "then" "elseif" "else" "endif"
@@ -35,7 +36,7 @@
     (let ((result (downcase str)))
       (cond ((member result autoit-reserved-word-list)
              result)
-            ((and (plusp (length result)) (char-equal (elt result 0) ?\#))
+            ((and (cl-plusp (length result)) (char-equal (elt result 0) ?\#))
              ";preprocessor;")
             (t ";id;")))))
 
@@ -210,7 +211,7 @@
   (let (*autoit-smie-forward-eob*
         *autoit-smie-forward-bob*)
     (save-excursion
-      (do ((prev nil current)
+      (cl-do ((prev nil current)
            (current (save-excursion (autoit-smie-backward-token-internal (- (point))))
                     (autoit-smie-backward-token-internal (point))))
           ((or (null current) (equal current ";lf;"))
@@ -223,7 +224,7 @@
   (let (*autoit-smie-forward-eob*
         *autoit-smie-forward-bob*)
     (save-excursion
-      (do ((prev nil current)
+      (cl-do ((prev nil current)
            (current (save-excursion (autoit-smie-forward-token-internal (- (point))))
                     (autoit-smie-forward-token-internal (point))))
           ((or (null current) (equal current ";lf;"))
@@ -584,7 +585,7 @@
                           #'smie-blink-matching-open
                           to-add))
          (filtered-psih
-          (nconc (mapcan (lambda (h) (unless (member h to-remove) (list h)))
+          (nconc (cl-mapcan (lambda (h) (unless (member h to-remove) (list h)))
                          post-self-insert-hook)
                  (list to-add))))
     (setq post-self-insert-hook filtered-psih)))

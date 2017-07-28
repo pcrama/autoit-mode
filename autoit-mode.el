@@ -498,5 +498,4 @@ name/parameters unless this length is exceeded.")
           (kill-buffer buffer))))))
 
 (provide 'autoit-mode)
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; autoit-mode.el ends here

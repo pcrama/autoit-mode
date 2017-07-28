@@ -1,5 +1,7 @@
 ;;; autoit-smie.el --- AutoIt navigation and indentation
 
+;; Version: 2017-07-28
+
 (require 'smie)
 
 (defconst autoit-reserved-word-list

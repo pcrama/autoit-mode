@@ -588,3 +588,4 @@
     (setq post-self-insert-hook filtered-psih)))
 
 (provide 'autoit-smie)
+;;; autoit-smie.el ends here

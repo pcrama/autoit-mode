@@ -9,6 +9,10 @@
 
 (defconst au3-mode-+exp-inst-sep+ ";exp-inst-sep;")
 
+(defconst au3-mode-+lf-case+ ";lf;case")
+
+(defconst au3-mode-+lf-case-else+ "Case+Else")
+
 (defconst au3-mode-+operator+ ";op;")
 
 (defconst au3-mode-+function-id+ ";func;")
@@ -114,11 +118,19 @@ to help grammar.")
            (skip-chars-forward " \t")))
     (when (eql (char-after) ?\n)
       (forward-char)
-      (if (and (not au3-mode--restrict-recursion)
-               (member (au3-mode--peek-bol-keyword start)
-                       '("While" "Func")))
-          au3-mode-+exp-inst-sep+
-        au3-mode-+newline+))))
+      (cond ((and (not au3-mode--restrict-recursion)
+                  (equal (let ((au3-mode--restrict-recursion t))
+                           (car (au3-mode--peek-token
+                                 'au3-mode-skip-to-next-token
+                                 'au3-mode--simplest-forward-token-internal)))
+                         "Case"))
+             au3-mode-+lf-case+)
+            ((and (not au3-mode--restrict-recursion)
+                  (member (au3-mode--peek-bol-keyword start)
+                          '("While" "Func" "Case")))
+             au3-mode-+exp-inst-sep+)
+            (t au3-mode-+newline+))
+      )))
 
 (defun au3-mode-next-newline ()
   (let ((last-point (point))
@@ -591,6 +603,8 @@ multi-line comment."
 ;; - While/WEnd
 ;;
 ;; - If/Then/EndIf + If/Then/Else/ElseIf/EndIf + single line if
+;;
+;; - Select/Case/EndSelect
 (defvar sample-smie-grammar
   (smie-prec2->grammar
    (smie-bnf->prec2
@@ -605,7 +619,18 @@ multi-line comment."
        ("If" exp "Then" finish-if-1 "EndIf")
        ("If" exp "Then" finish-if-2 "EndIf")
        ("If;1;" exp "Then;1;" inst)
+       ("Select" case-list "EndSelect")
+       ;("Select" ,au3-mode-+lf-case+ one-case ,au3-mode-+lf-case+ one-case "EndSelect")
        )
+      (one-case
+       ("Case" exp ,au3-mode-+exp-inst-sep+ inst-list)
+       ("Case" "Else" ,au3-mode-+exp-inst-sep+ inst-list))
+      (case-list
+       (one-case)
+       (case-list ,au3-mode-+lf-case+ case-list)
+       (one-case ,au3-mode-+lf-case+ case-list)
+       (case-list ,au3-mode-+lf-case+ ,au3-mode-+lf-case-else+ inst-list)
+      )
       (finish-if-1
        (inst-list "Else" inst-list))
       (finish-if-2
@@ -637,7 +662,10 @@ multi-line comment."
       ;(func-id-plus-bracketed (,au3-mode-+function-id+ bracketed))
       (exps (exps "," exps) (exp) (id ,au3-mode-+assignment+ exp))
       )
-    `((left ,au3-mode-+newline+))
+    `((assoc ,au3-mode-+lf-case+)
+      ;(assoc ,au3-mode-+exp-inst-sep+)
+      (left ,au3-mode-+newline+)
+      )
     `((assoc ",")
       (assoc "Or")
       (assoc "And")
@@ -699,19 +727,27 @@ Func x($z)
   While ($z > 123)
     Return 1
   WEnd
-EndFunc;>4"))
+EndFunc;>4
+Select
+  Case $a > 1
+    aa()
+  Case $b > 2
+    bb()
+EndSelect
+blabla()"))
     (pcase-dolist (`(,from ,to . ,only)
-                   '((";<1\n" ";>1")
-                     (";<2\n" ";>2")
-                     (";<3\n" ";>3")
-                     (";>3\n" ";>!3" forward)
-                     (";<4\n" ";>4")
-                     (";<5\n" ";>5" forward)
-                     (";<5\n" "While ($z > 123)" backward)
-                     ("dsfg" "_ ; some comment")
-                     ("unique_func_name" ";unique")
-                     (";<5\n" "While ($z > 123)" backward)
-                     ))
+                   '(;(";<1\n" ";>1")
+                     ;(";<2\n" ";>2")
+                     ;(";<3\n" ";>3")
+                     ;(";>3\n" ";>!3" forward)
+                     ;; (";<4\n" ";>4")
+                     ;; (";<5\n" ";>5" forward)
+                     ;; (";<5\n" "While ($z > 123)" backward)
+                     ;; ("dsfg" "_ ; some comment")
+                     ;; ("unique_func_name" ";unique")
+                     ;; (";<5\n" "While ($z > 123)" backward)
+                     ("EndFunc;>4\n" "blabla()" forward)
+            ))
       (when (or (null only) (member 'backward only))
         (should (au3-mode--test-xxxward-sexp-jump
                  txt
@@ -1820,6 +1856,34 @@ precedence grammar (see SMIE documentation)."
     ;; (should-not (au3-mode--run-token-matcher fun "|@f(_,\n@$a|)"))
     (should (equal (au3-mode--run-token-matcher fun "@\n\n\n\t|f(_,\n@$a|)")
                    au3-mode-+newline+))))
+
+(ert-deftest test-au3-mode-parse-select-case-endselect ()
+  "Parsing of Select/Case/EndSelect"
+  :tags '(token)
+  (let ((data+exp `(("|select\n@Case $a > 2\nb()\nEndSelect" "Select")
+                    ;("select|\n@Case $a > 2\nb()\nEndSelect" ,au3-mode-+lf-case+)
+                    ("select\n|Case@ $a > 2\nb()\nEndSelect" "Case")
+                    ("select\nCase $a > 2|\n@b()\nEndSelect" ,au3-mode-+exp-inst-sep+)
+                    ("select\nCase $a > 2\nb()|\nEndSelect@" "EndSelect")
+                    ("select\nCase $a > 2\nb()|\n@Case Else\nc()\nEndSelect"
+                     ,au3-mode-+lf-case+)
+                    ("select\nCase $a > 2\nb()\n|Case@ Else\nc()\nEndSelect"
+                     "Case")
+                    ("select\nCase $a > 2\nb()\nCase |Else@\nc()\nEndSelect"
+                     "Else")
+                    ("select\nCase $a > 2\nb()\nCase Else|\n@c()\nEndSelect"
+                     ,au3-mode-+exp-inst-sep+)
+                    ("select\nCase $a > 2\nb()\nCase Else\nc()|\n@EndSelect"
+                     ,au3-mode-+newline+))))
+    (dolist (d+e data+exp)
+      (should (equal (au3-mode--run-token-matcher 'au3-mode-simplest-forward-token
+                                                  (car d+e))
+                     (cadr d+e)))
+      (should (equal (au3-mode--run-token-matcher 'au3-mode-simplest-backward-token
+                                                  (car d+e)
+                                                  "@"
+                                                  "|")
+                     (cadr d+e))))))
 
 (defun revert-autoit ()
   (interactive)
